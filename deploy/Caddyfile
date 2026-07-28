@@ -1,0 +1,26 @@
+# Caddy delante del panel: HTTPS automatico (Let's Encrypt) y cabeceras duras.
+#
+# Sustituye el dominio por el tuyo y apunta su DNS al droplet (159.89.19.12).
+# Sin dominio, usa el tunel SSH que explica el README en vez de esto.
+
+panel.tudominio.com {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# La UI es un unico fichero sin recursos externos: se puede cerrar del todo.
+		Content-Security-Policy "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		-Server
+	}
+
+	# Segunda cerradura opcional: descomenta para exigir tambien Basic Auth.
+	# Genera el hash con:  caddy hash-password
+	# basic_auth {
+	# 	manu $2a$14$...
+	# }
+
+	reverse_proxy 127.0.0.1:8080
+}

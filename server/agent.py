@@ -1,0 +1,624 @@
+"""Natural-language control of the bot and the droplet, backed by Claude.
+
+The safety model is the whole point of this file, so it is worth stating plainly:
+
+* **Read tools run automatically.** Asking about P&L, positions, configs, logs
+  or server health has no downside, so the agent just does it.
+* **Anything that moves money, edits a config, restarts a service or runs a
+  shell command does not execute.** Those tools only *queue a proposal*. The
+  proposal is returned to the browser, you read exactly what it will do, and it
+  runs only when you press Confirm.
+
+That split is why the model is never handed a root shell in the usual sense: it
+can compose an action, but it cannot take one. An LLM sitting one prompt
+injection away from a wallet's private key is not a risk worth taking for the
+convenience of skipping a button press.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import secrets
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import anthropic
+
+from . import botlink, chain, config, ops
+
+logger = logging.getLogger(__name__)
+
+#: Proposals expire so a queued sell cannot be confirmed an hour later against
+#: a position that has completely changed.
+PENDING_TTL_SECONDS = 600
+MAX_HISTORY_MESSAGES = 24
+
+SYSTEM_PROMPT = """\
+Eres el copiloto de Manu para su bot de sniping de Solana (pump.fun / letsbonk),
+que corre en su propio servidor. Hablas español, en corto y al grano.
+
+Contexto del sistema:
+- Varios bots corren en paralelo, cada uno con su YAML en `bots/`. Cada bot
+  mantiene como mucho UNA posición abierta a la vez.
+- Las posiciones abiertas las escribe el propio bot cada ~2s; el P&L realizado
+  sale del log de fills (`trades/trades.log`) y es una estimación, no una
+  auditoría on-chain. La foto real del wallet viene de la herramienta de cadena.
+- Cambiar un YAML NO afecta a un bot que ya está corriendo: hay que reiniciarlo.
+  Dilo siempre que propongas un cambio de config.
+
+Cómo trabajas:
+- Usa las herramientas de lectura libremente antes de responder. No inventes
+  cifras: si no has mirado, mira.
+- Las herramientas que empiezan por `propose_` NO ejecutan nada; dejan una
+  propuesta pendiente que Manu confirma a mano. Cuando uses una, di en una
+  frase qué has dejado preparado y qué efecto tendrá. No digas que ya está hecho.
+- Si te pide algo destructivo o ambiguo sobre dinero, propón la acción más
+  conservadora que cumpla lo que pidió y dilo.
+
+Estilo:
+- Respuestas breves y centradas. Primero el resultado, después el detalle.
+- Cifras con unidades (SOL, %, USD). Nada de tablas gigantes ni relleno.
+- No te disculpes ni narres tu proceso. Si algo falla, di qué falló y sigue.
+- Entrega lo que te piden al alcance que te lo piden: no amplíes la tarea por
+  tu cuenta ni añadas pasos que nadie pidió.
+"""
+
+
+class AgentError(RuntimeError):
+    """The agent could not be reached or is not configured."""
+
+
+# --------------------------------------------------------------------------- #
+# Pending actions                                                             #
+# --------------------------------------------------------------------------- #
+
+_PENDING: dict[str, dict[str, Any]] = {}
+
+
+def _expire_pending() -> None:
+    now = time.time()
+    for key in [k for k, v in _PENDING.items() if v["expires_at"] < now]:
+        _PENDING.pop(key, None)
+
+
+def _queue(kind: str, summary: str, danger: str, run: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
+    """Register a proposal and return the record shown in the UI."""
+    _expire_pending()
+    action_id = secrets.token_urlsafe(9)
+    record = {
+        "id": action_id,
+        "kind": kind,
+        "summary": summary,
+        "danger": danger,  # "low" | "medium" | "high"
+        "created_at": time.time(),
+        "expires_at": time.time() + PENDING_TTL_SECONDS,
+        "_run": run,
+    }
+    _PENDING[action_id] = record
+    return record
+
+
+def pending_actions() -> list[dict[str, Any]]:
+    """Proposals still awaiting confirmation, newest last."""
+    _expire_pending()
+    return [
+        {k: v for k, v in record.items() if not k.startswith("_")}
+        for record in sorted(_PENDING.values(), key=lambda r: r["created_at"])
+    ]
+
+
+async def confirm_action(action_id: str) -> dict[str, Any]:
+    """Execute a queued proposal. Single-use: it is dropped either way."""
+    _expire_pending()
+    record = _PENDING.pop(action_id, None)
+    if record is None:
+        raise AgentError("Esa acción ya no existe (caducó o ya se ejecutó).")
+    result = await record["_run"]()
+    return {"executed": True, "kind": record["kind"], "summary": record["summary"], "result": result}
+
+
+def cancel_action(action_id: str) -> bool:
+    """Discard a queued proposal without running it."""
+    return _PENDING.pop(action_id, None) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Tool schemas                                                                #
+# --------------------------------------------------------------------------- #
+
+READ_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "get_open_positions",
+        "description": (
+            "Posiciones abiertas ahora mismo con su P&L en vivo, según lo que "
+            "escriben los bots. Úsala para '¿cómo voy?' o '¿qué tengo abierto?'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_performance",
+        "description": (
+            "P&L realizado, win rate y ROI a partir del log de fills. Pasa "
+            "since_hours para acotar la ventana (24 = hoy, 168 = semana)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "since_hours": {
+                    "type": "number",
+                    "description": "Ventana en horas. Omítelo para el histórico completo.",
+                }
+            },
+        },
+    },
+    {
+        "name": "get_recent_trades",
+        "description": "Últimos tokens cerrados con su P&L, del más reciente al más antiguo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "1-200, por defecto 25"}},
+        },
+    },
+    {
+        "name": "get_wallet",
+        "description": (
+            "Foto real del wallet on-chain: saldo en SOL, tokens que aún tiene y "
+            "su valor en USD vía Jupiter. Úsala cuando pregunte por el saldo, "
+            "cuánto vale la cuenta, o si sospecha que un token se quedó colgado."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_bots",
+        "description": "Todos los bots configurados: si están activos, su estrategia y si tienen posición.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_bot_config",
+        "description": "YAML completo de un bot concreto (filtros, TP/SL, tamaño de compra).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Nombre del fichero sin .yaml"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "tail_logs",
+        "description": "Últimas líneas del log más reciente, opcionalmente de un bot concreto.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Bot concreto; omítelo para el log más nuevo"},
+                "lines": {"type": "integer", "description": "1-400, por defecto 40"},
+            },
+        },
+    },
+    {
+        "name": "server_health",
+        "description": (
+            "Salud del servidor: carga, disco, memoria, procesos del bot vivos y "
+            "estado de los servicios systemd permitidos."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "service_journal",
+        "description": "Log de systemd (journalctl) de un servicio permitido.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "unit": {
+                    "type": "string",
+                    "description": "Nombre exacto de la unidad, p.ej. sniper-bot.service",
+                },
+                "lines": {"type": "integer"},
+            },
+            "required": ["unit"],
+        },
+    },
+]
+
+WRITE_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "propose_sell",
+        "description": (
+            "Deja preparada una venta de parte de una posición abierta. NO vende: "
+            "Manu tiene que confirmarla. Usa el 'suffix' que devuelve "
+            "get_open_positions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "suffix": {
+                    "type": "string",
+                    "description": "Identificador de la posición, p.ej. _bot-sniper-gemas",
+                },
+                "percent": {"type": "number", "description": "Porcentaje del RESTANTE a vender (1-100)"},
+            },
+            "required": ["suffix", "percent"],
+        },
+    },
+    {
+        "name": "propose_toggle_bot",
+        "description": (
+            "Prepara activar o desactivar un bot en su YAML. Requiere reinicio "
+            "para que un proceso ya arrancado lo note. No ejecuta nada por sí sola."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "enabled": {"type": "boolean"},
+            },
+            "required": ["name", "enabled"],
+        },
+    },
+    {
+        "name": "propose_config_change",
+        "description": (
+            "Prepara el cambio de un parámetro numérico de trading de un bot. "
+            "Campos válidos: buy_amount, take_profit_percentage, "
+            "stop_loss_percentage, take_profit_sell_percentage, buy_slippage, "
+            "sell_slippage, max_token_age, wait_time_after_creation. "
+            "Los porcentajes van en fracción (0.4 = +40%). No ejecuta nada."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "field": {"type": "string"},
+                "value": {"type": "number"},
+            },
+            "required": ["name", "field", "value"],
+        },
+    },
+    {
+        "name": "propose_restart_service",
+        "description": "Prepara el reinicio de un servicio systemd permitido. No ejecuta nada.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"unit": {"type": "string"}},
+            "required": ["unit"],
+        },
+    },
+    {
+        "name": "propose_stop_service",
+        "description": "Prepara la parada de un servicio systemd permitido. No ejecuta nada.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"unit": {"type": "string"}},
+            "required": ["unit"],
+        },
+    },
+]
+
+SHELL_TOOL: dict[str, Any] = {
+    "name": "propose_shell",
+    "description": (
+        "Último recurso: prepara un comando de shell en el directorio del bot "
+        "para algo que ninguna otra herramienta cubre. No ejecuta nada; Manu ve "
+        "el comando exacto y decide. Explica siempre por qué hace falta."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "why": {"type": "string", "description": "Qué pretendes conseguir"},
+        },
+        "required": ["command", "why"],
+    },
+}
+
+
+def _tools() -> list[dict[str, Any]]:
+    tools = READ_TOOLS + WRITE_TOOLS
+    if config.AGENT_ALLOW_SHELL:
+        tools.append(SHELL_TOOL)
+    return tools
+
+
+# --------------------------------------------------------------------------- #
+# Tool execution                                                              #
+# --------------------------------------------------------------------------- #
+
+
+async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
+    """Run a read tool, or queue a write tool and describe what was queued."""
+    if name == "get_open_positions":
+        return botlink.live_positions()
+    if name == "get_performance":
+        return botlink.performance(args.get("since_hours"))
+    if name == "get_recent_trades":
+        return botlink.recent_trades(int(args.get("limit", 25)))
+    if name == "get_wallet":
+        return await chain.wallet_snapshot()
+    if name == "list_bots":
+        return botlink.list_bots()
+    if name == "read_bot_config":
+        return botlink.read_config(args["name"])
+    if name == "tail_logs":
+        return botlink.tail_log(args.get("name"), int(args.get("lines", 40)))
+    if name == "server_health":
+        return await ops.health()
+    if name == "service_journal":
+        return await ops.journal(args["unit"], int(args.get("lines", 60)))
+
+    if name == "propose_sell":
+        suffix = str(args["suffix"])
+        percent = float(args["percent"])
+        if not 0 < percent <= 100:
+            raise ValueError("El porcentaje debe estar entre 0 y 100")
+        position = next((p for p in botlink.live_positions() if p["suffix"] == suffix), None)
+        if position is None:
+            raise botlink.BotLinkError(f"No hay posicion abierta con suffix {suffix!r}")
+        fraction = percent / 100
+        record = _queue(
+            "sell",
+            f"Vender {percent:g}% de {position['symbol']} ({position['bot']}), "
+            f"P&L actual {position['pnl_pct']:+.1f}%, ~{position['value_sol']:.3f} SOL en juego",
+            "high",
+            lambda: _as_async(botlink.request_sell, suffix, fraction),
+        )
+        return {
+            "queued": True,
+            "action_id": record["id"],
+            "note": "Pendiente de confirmacion por Manu. No se ha vendido nada todavia.",
+        }
+
+    if name == "propose_toggle_bot":
+        bot_name = str(args["name"])
+        enabled = bool(args["enabled"])
+        verb = "Activar" if enabled else "Desactivar"
+        record = _queue(
+            "toggle_bot",
+            f"{verb} el bot {bot_name} (requiere reiniciar el proceso para aplicarse)",
+            "medium",
+            lambda: _as_async(botlink.set_enabled, bot_name, enabled),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_config_change":
+        bot_name = str(args["name"])
+        field = str(args["field"])
+        value = float(args["value"])
+        if field not in botlink.EDITABLE_TRADE_FIELDS:
+            raise botlink.BotLinkError(
+                f"Campo no editable: {field}. Permitidos: "
+                f"{', '.join(sorted(botlink.EDITABLE_TRADE_FIELDS))}"
+            )
+        current = (botlink.read_config(bot_name).get("trade") or {}).get(field)
+        record = _queue(
+            "config",
+            f"{bot_name}: {field} {current!r} -> {value!r} (requiere reinicio)",
+            "medium",
+            lambda: _as_async(botlink.set_trade_field, bot_name, field, value),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_restart_service":
+        unit = str(args["unit"])
+        record = _queue(
+            "restart", f"Reiniciar el servicio {unit}", "high",
+            lambda: ops.restart_unit(unit),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_stop_service":
+        unit = str(args["unit"])
+        record = _queue(
+            "stop", f"PARAR el servicio {unit} (deja de operar)", "high",
+            lambda: ops.stop_unit(unit),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_shell":
+        command = str(args["command"])
+        record = _queue(
+            "shell", f"Ejecutar en {config.BOT_REPO}:  {command}", "high",
+            lambda: ops.run_shell(command),
+        )
+        return {
+            "queued": True,
+            "action_id": record["id"],
+            "note": "Pendiente de confirmacion. Manu vera el comando exacto antes de nada.",
+        }
+
+    raise AgentError(f"Herramienta desconocida: {name}")
+
+
+async def _as_async(func: Callable[..., Any], *args: Any) -> Any:
+    """Adapt the synchronous botlink helpers to the async confirmation queue."""
+    return func(*args)
+
+
+# --------------------------------------------------------------------------- #
+# Conversation                                                                #
+# --------------------------------------------------------------------------- #
+
+_client: anthropic.AsyncAnthropic | None = None
+_fallbacks_supported = True
+
+
+def _get_client() -> anthropic.AsyncAnthropic:
+    global _client
+    if not config.ANTHROPIC_API_KEY:
+        raise AgentError(
+            "Falta ANTHROPIC_API_KEY en el .env del panel: sin ella el chat en "
+            "lenguaje natural no funciona (el resto del panel sí)."
+        )
+    if _client is None:
+        _client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+    return _client
+
+
+async def _create_message(**kwargs: Any) -> Any:
+    """Call the API, opting into server-side fallbacks when the org allows it.
+
+    Claude Opus 5's safety classifiers can decline a request outright; the
+    ``fallbacks`` parameter re-runs it on another model server-side. If the beta
+    is not enabled for this key the first call 400s once, and we remember not to
+    ask again.
+    """
+    global _fallbacks_supported
+    client = _get_client()
+    if _fallbacks_supported:
+        try:
+            return await client.beta.messages.create(
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs
+            )
+        except anthropic.BadRequestError:
+            logger.info("Fallbacks del servidor no disponibles; sigo sin ellos.")
+            _fallbacks_supported = False
+    return await client.messages.create(**kwargs)
+
+
+def _snapshot() -> str:
+    """A cheap situational summary so the agent starts oriented, not blind."""
+    parts: list[str] = []
+    try:
+        positions = botlink.live_positions()
+        if positions:
+            parts.append(
+                "Posiciones abiertas: "
+                + "; ".join(
+                    f"{p['symbol']} ({p['bot']}, suffix {p['suffix']}) "
+                    f"{p['pnl_pct']:+.1f}% ~{p['value_sol']:.3f} SOL"
+                    for p in positions
+                )
+            )
+        else:
+            parts.append("Posiciones abiertas: ninguna.")
+        bots = botlink.list_bots()
+        active = [b["file"] for b in bots if b.get("enabled")]
+        parts.append(f"Bots activos ({len(active)} de {len(bots)}): {', '.join(active) or 'ninguno'}")
+    except botlink.BotLinkError as exc:
+        parts.append(f"No pude leer el estado del bot: {exc}")
+    return "\n".join(parts)
+
+
+def _text_of(response: Any) -> str:
+    return "\n".join(b.text for b in response.content if b.type == "text").strip()
+
+
+def _starts_a_turn(message: dict[str, Any]) -> bool:
+    """True if the conversation can legally begin at this message.
+
+    That means a real user turn -- not an assistant reply, and not the synthetic
+    user message that carries ``tool_result`` blocks back to the model.
+    """
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return True
+    return not any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content or []
+    )
+
+
+def _trim(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound the history without splitting a tool_use from its tool_result.
+
+    A naive tail slice can start the conversation on an assistant turn, or on
+    the tool_result half of a pair whose tool_use was just dropped -- both are a
+    400 from the API. So after slicing, walk forward to the next clean start.
+    """
+    trimmed = list(history)[-MAX_HISTORY_MESSAGES:]
+    while trimmed and not _starts_a_turn(trimmed[0]):
+        trimmed.pop(0)
+    return trimmed
+
+
+async def chat(history: list[dict[str, Any]], message: str) -> dict[str, Any]:
+    """Run one user turn to completion, executing tools as the model asks.
+
+    ``history`` is the raw ``messages`` list from previous turns; the caller owns
+    it (it lives in the session). Returns the reply, the updated history and any
+    proposals that are now waiting for confirmation.
+    """
+    tools = _tools()
+    messages: list[dict[str, Any]] = _trim(history)
+    # The snapshot goes in the user turn, after the cached system prompt, so it
+    # never invalidates the cached prefix.
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"<estado_actual>\n{_snapshot()}\n</estado_actual>"},
+                {"type": "text", "text": message},
+            ],
+        }
+    )
+
+    queued_before = {a["id"] for a in pending_actions()}
+    reply = ""
+
+    for _ in range(config.AGENT_MAX_ROUNDS):
+        try:
+            response = await _create_message(
+                model=config.AGENT_MODEL,
+                max_tokens=config.AGENT_MAX_TOKENS,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                output_config={"effort": config.AGENT_EFFORT},
+                tools=tools,
+                messages=messages,
+            )
+        except anthropic.APIStatusError as exc:
+            raise AgentError(f"La API de Claude devolvio {exc.status_code}: {exc.message}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise AgentError(f"No pude hablar con la API de Claude: {exc}") from exc
+
+        if response.stop_reason == "refusal":
+            raise AgentError("Claude ha rechazado esta peticion por politica de seguridad.")
+
+        messages.append({"role": "assistant", "content": response.content})
+        reply = _text_of(response) or reply
+
+        tool_uses = [block for block in response.content if block.type == "tool_use"]
+        if not tool_uses:
+            break
+
+        results: list[dict[str, Any]] = []
+        for block in tool_uses:
+            try:
+                output = await _execute_tool(block.name, dict(block.input or {}))
+                content = json.dumps(output, ensure_ascii=False, default=str)[:24000]
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+            except (botlink.BotLinkError, chain.ChainError, ops.OpsError, ValueError, KeyError) as exc:
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Error: {exc}",
+                        "is_error": True,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 -- never kill the turn on one bad tool
+                logger.exception("Fallo la herramienta %s", block.name)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Error inesperado: {exc}",
+                        "is_error": True,
+                    }
+                )
+        messages.append({"role": "user", "content": results})
+    else:
+        reply = (reply + "\n\n_(Corté aquí: demasiadas vueltas de herramientas.)_").strip()
+
+    new_pending = [a for a in pending_actions() if a["id"] not in queued_before]
+    return {
+        "reply": reply or "(sin respuesta)",
+        "history": messages,
+        "pending": new_pending,
+    }

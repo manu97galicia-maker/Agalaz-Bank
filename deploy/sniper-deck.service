@@ -1,0 +1,23 @@
+[Unit]
+Description=Sniper Deck - panel privado del bot de sniping
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/sniper-deck
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/sniper-deck/.venv/bin/python -m server
+Restart=always
+RestartSec=5
+
+# El panel solo lee ficheros del bot y escribe sell_cmd/config; no necesita
+# nada mas del sistema.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=false
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
