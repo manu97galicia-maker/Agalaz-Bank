@@ -22,7 +22,10 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import UTC, datetime
+
+# timezone.utc, not datetime.UTC: the droplet runs Ubuntu 22.04 / Python 3.10,
+# where the UTC alias does not exist yet.
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -222,7 +225,7 @@ def performance(since_hours: float | None = None) -> dict[str, Any]:
     if since_hours:
         # The bot logs naive UTC (``datetime.utcnow().isoformat()``), so the
         # cutoff has to be naive too for the string comparison to line up.
-        cutoff = datetime.fromtimestamp(time.time() - since_hours * 3600, UTC)
+        cutoff = datetime.fromtimestamp(time.time() - since_hours * 3600, timezone.utc)
         since_iso = cutoff.replace(tzinfo=None).isoformat()
 
     positions = _positions_from_trades()

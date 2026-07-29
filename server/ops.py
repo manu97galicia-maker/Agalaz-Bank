@@ -42,7 +42,9 @@ async def _run(argv: list[str], timeout: int = _TIMEOUT) -> dict[str, Any]:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-    except TimeoutError as exc:
+    # asyncio.TimeoutError, not the builtin: they only became the same class in
+    # Python 3.11, and the droplet is on 3.10.
+    except asyncio.TimeoutError as exc:  # noqa: UP041
         raise OpsError(f"'{argv[0]}' no termino en {timeout}s") from exc
     except OSError as exc:
         raise OpsError(f"No pude ejecutar {argv[0]}: {exc}") from exc
@@ -64,7 +66,7 @@ async def _run_shell(command: str, timeout: int = _TIMEOUT) -> dict[str, Any]:
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-    except TimeoutError as exc:
+    except asyncio.TimeoutError as exc:  # noqa: UP041
         process.kill()
         raise OpsError(f"El comando no termino en {timeout}s") from exc
     return {

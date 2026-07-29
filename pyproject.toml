@@ -2,7 +2,8 @@
 name = "sniper-deck"
 version = "0.1.0"
 description = "Panel privado para manejar el bot de sniping y su servidor"
-requires-python = ">=3.11"
+# 3.10 es lo que trae Ubuntu 22.04, que es donde vive el droplet.
+requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",
     "PyYAML>=6.0",
@@ -13,7 +14,8 @@ dependencies = [
 # 110 rather than the usual 88/100: the tool descriptions the agent reads are
 # Spanish prose, and wrapping them makes them harder to review, not easier.
 line-length = 110
-target-version = "py311"
+# py310, para que ruff no vuelva a "arreglar" cosas que solo existen en 3.11+.
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S", "RET", "SIM"]
