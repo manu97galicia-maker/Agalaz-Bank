@@ -161,6 +161,12 @@
 
     <div class="who-pick" id="whoPick"></div>
 
+    <!-- Fallback: si no hay usuarios que elegir (droplet sin sembrar o bootstrap
+         caído), deja escribir el usuario a mano en vez de quedarte bloqueado. -->
+    <div id="whoType" style="display:none">
+      <input class="field" id="uField" placeholder="Usuario" autocomplete="username">
+    </div>
+
     <div id="pwBox">
       <input class="field" id="p" type="password" placeholder="Contraseña" autocomplete="current-password">
     </div>
@@ -432,25 +438,44 @@ async function loadBootstrap() {
       box.appendChild(btn);
     }
     if (b.users[0]) { selectedUser = b.users[0].user; box.firstChild.classList.add("on"); }
+    // Sin usuarios que elegir => campo de texto para escribir el usuario a mano.
+    setTypeMode(b.users.length === 0);
     $("#faceBtn").style.display = faceAvailable ? "flex" : "none";
-  } catch (e) { /* login aun asi */ }
+  } catch (e) {
+    // Bootstrap caído (p.ej. droplet inaccesible): no dejes la pantalla muerta,
+    // permite escribir el usuario para poder intentar entrar igual.
+    setTypeMode(true);
+  }
+}
+
+// Alterna entre elegir usuario por botón y escribirlo a mano.
+function setTypeMode(on) {
+  $("#whoPick").style.display = on ? "none" : "flex";
+  $("#whoType").style.display = on ? "block" : "none";
 }
 
 $("#toggleMode").onclick = () => {
   pinMode = !pinMode;
   $("#pwBox").style.display = pinMode ? "none" : "block";
-  $("#whoPick").style.display = pinMode ? "none" : "flex";
+  // En modo PIN se ocultan tanto los botones como el campo de texto de usuario.
+  const typing = $("#whoType").style.display !== "none";
+  $("#whoPick").style.display = pinMode ? "none" : (typing ? "none" : "flex");
+  $("#whoType").style.display = pinMode ? "none" : (typing ? "block" : "none");
   $("#pinBox").style.display = pinMode ? "block" : "none";
   $("#toggleMode").textContent = pinMode ? "Entrar con contraseña" : "Entrar con PIN";
-  (pinMode ? $("#pin") : $("#p")).focus();
+  (pinMode ? $("#pin") : (typing ? $("#uField") : $("#p"))).focus();
 };
 
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   $("#loginBtn").disabled = true; err("");
   const remember = $("#remember").checked;
+  // El usuario sale del botón elegido o, si se escribe a mano, del campo de texto.
+  const typedUser = ($("#uField").value || "").trim();
+  const user = selectedUser || typedUser;
   const body = pinMode ? { pin: $("#pin").value, remember }
-                       : { user: selectedUser, password: $("#p").value, remember };
+                       : { user, password: $("#p").value, remember };
+  if (!pinMode && !user) { err("Escribe tu usuario."); $("#loginBtn").disabled = false; return; }
   try {
     const out = await api("/api/login", { method: "POST", body: JSON.stringify(body) });
     $("#p").value = ""; $("#pin").value = "";
@@ -460,9 +485,10 @@ $("#loginForm").addEventListener("submit", async e => {
 
 $("#faceBtn").onclick = async () => {
   err("");
-  if (!selectedUser) return err("Elige un usuario primero.");
+  const faceUser = selectedUser || ($("#uField").value || "").trim();
+  if (!faceUser) return err("Elige o escribe un usuario primero.");
   try {
-    const opt = await api("/api/face/login/options", { method: "POST", body: JSON.stringify({ user: selectedUser }) });
+    const opt = await api("/api/face/login/options", { method: "POST", body: JSON.stringify({ user: faceUser }) });
     const o = opt.options;
     o.challenge = b64uToBuf(o.challenge);
     (o.allowCredentials || []).forEach(c => c.id = b64uToBuf(c.id));
