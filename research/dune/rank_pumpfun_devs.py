@@ -203,7 +203,7 @@ def main() -> int:
     kept.sort(key=lambda r: r.get("score", 0), reverse=True)
 
     cols = ["score", "creator", "launches", "launches_per_day", "median_peak_mcap_usd",
-            "median_volume_usd", "median_vol_1h_usd", "median_lifespan_h",
+            "min_last5_mcap", "median_volume_usd", "median_vol_1h_usd", "median_lifespan_h",
             "pumpdump_1h_rate", "organic_rate", "rug_rate", "migration_rate",
             "dex_paid_rate", "dex_checked", "median_uniq_traders", "last_launch_at"]
     with open(args.out, "w", newline="", encoding="utf-8") as fh:

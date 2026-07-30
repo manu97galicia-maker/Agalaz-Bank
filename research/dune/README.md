@@ -14,7 +14,8 @@ Devuelve los **100 devs más frecuentes** que además sean sanos y orgánicos.
 | Con volumen | mediana de volumen/token ≥ 15k y ≥ 3k en la 1ª hora | SQL |
 | Orgánico | ≥70% sin bundle/snipe del dev en el slot de creación | SQL |
 | Sano / sin rug | ≤20% de tokens "rug" (muere <30 min, no arranca, o dev vende fuerte) | SQL |
-| Tamaño | mediana del market-cap máximo ≥ 25k USD | SQL |
+| Tamaño (mediana recortada) | mediana ≥ 25k **ignorando** duds (<16k) y pelotazos (>1M) | SQL |
+| Consistencia reciente | ninguno de sus **5 últimos** lanzamientos por debajo de 15k | SQL |
 | Migración | **informativa** (columna migration_rate), NO obligatoria | SQL |
 | Paga DexScreener | ≥50% de tokens con Enhanced Token Info **pagado** (status=approved) | script |
 

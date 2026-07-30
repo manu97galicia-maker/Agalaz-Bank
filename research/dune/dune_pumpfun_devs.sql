@@ -21,7 +21,10 @@
 WITH params AS (
     SELECT
         DATE_ADD('day', -30, NOW())  AS since_ts,     -- <<< ventana de análisis
-        25000.0   AS min_median_mcap_usd,             -- <<< mediana MC máx mínima
+        25000.0   AS min_median_mcap_usd,             -- <<< mediana (recortada) mínima
+        16000.0   AS repr_floor_usd,                  -- <<< piso: ignora tokens < esto en la mediana
+        1000000.0 AS repr_ceiling_usd,                -- <<< techo: ignora pelotazos > 1M en la mediana
+        15000.0   AS min_last5_min_mcap_usd,          -- <<< sus 5 últimos: ninguno por debajo de esto
         15000.0   AS min_median_volume_usd,           -- <<< mediana de volumen/token
         3000.0    AS min_median_vol_1h_usd,           -- <<< volumen mediano en 1ª hora
         0.10      AS max_pumpdump_1h_rate,            -- <<< % pump&dump 1ª hora (bajo)
@@ -167,6 +170,21 @@ classified AS (
     FROM token_level
 ),
 
+-- 8b) Consistencia reciente: sus 5 lanzamientos más nuevos ------------------ #
+ranked AS (
+    SELECT creator, peak_mcap_usd,
+           ROW_NUMBER() OVER (PARTITION BY creator ORDER BY created_at DESC) AS rn
+    FROM classified
+),
+recent5 AS (
+    SELECT creator,
+           MIN(peak_mcap_usd) AS min_last5_mcap,
+           COUNT(*)           AS n_last5
+    FROM ranked
+    WHERE rn <= 5
+    GROUP BY creator
+),
+
 -- 9) Agregado por DEV ------------------------------------------------------- #
 dev_agg AS (
     SELECT
@@ -175,6 +193,10 @@ dev_agg AS (
         DATE_DIFF('day', MIN(created_at), MAX(created_at)) + 1 AS span_days,
         COUNT(*) * 1.0 / (DATE_DIFF('day', MIN(created_at), MAX(created_at)) + 1) AS launches_per_day,
         APPROX_PERCENTILE(peak_mcap_usd, 0.5) AS median_peak_mcap_usd,
+        -- Mediana RECORTADA: ignora duds (<piso) y pelotazos (>techo) para que
+        -- represente el lanzamiento típico, no el outlier de 1M ni el de 16k.
+        APPROX_PERCENTILE(CASE WHEN peak_mcap_usd BETWEEN repr_floor_usd AND repr_ceiling_usd
+                               THEN peak_mcap_usd END, 0.5) AS median_peak_mcap_repr,
         APPROX_PERCENTILE(volume_usd, 0.5)    AS median_volume_usd,
         APPROX_PERCENTILE(vol_1h, 0.5)        AS median_vol_1h_usd,
         APPROX_PERCENTILE(lifespan_h, 0.5)    AS median_lifespan_h,
@@ -185,37 +207,42 @@ dev_agg AS (
         APPROX_PERCENTILE(uniq_traders, 0.5)  AS median_uniq_traders,
         MAX(created_at) AS last_launch_at,
         SLICE(ARRAY_AGG(mint ORDER BY created_at DESC), 1, 10) AS sample_mints
-    FROM classified
+    FROM classified, params
     GROUP BY creator
 )
 
 SELECT
-    creator,
-    launches,
-    span_days,
-    ROUND(launches_per_day, 2)     AS launches_per_day,
-    ROUND(median_peak_mcap_usd, 0) AS median_peak_mcap_usd,
-    ROUND(median_volume_usd, 0)    AS median_volume_usd,
-    ROUND(median_vol_1h_usd, 0)    AS median_vol_1h_usd,
-    ROUND(median_lifespan_h, 2)    AS median_lifespan_h,
-    ROUND(pumpdump_1h_rate, 3)     AS pumpdump_1h_rate,
-    ROUND(migration_rate, 3)       AS migration_rate,   -- informativo (sí/no en %)
-    ROUND(organic_rate, 3)         AS organic_rate,
-    ROUND(rug_rate, 3)             AS rug_rate,
-    median_uniq_traders,
-    last_launch_at,
-    sample_mints
-FROM dev_agg, params
-WHERE launches             >= min_launches
-  AND span_days            >= min_span_days
-  AND launches_per_day     >= min_launches_per_day
-  AND median_peak_mcap_usd >= min_median_mcap_usd
-  AND median_volume_usd    >= min_median_volume_usd
-  AND median_vol_1h_usd    >= min_median_vol_1h_usd
-  AND pumpdump_1h_rate     <= max_pumpdump_1h_rate
-  AND organic_rate         >= min_organic_rate
-  AND rug_rate             <= max_rug_rate
-ORDER BY launches_per_day DESC, median_volume_usd DESC
+    d.creator,
+    d.launches,
+    d.span_days,
+    ROUND(d.launches_per_day, 2)       AS launches_per_day,
+    ROUND(d.median_peak_mcap_repr, 0)  AS median_peak_mcap_usd,   -- mediana recortada
+    ROUND(r.min_last5_mcap, 0)         AS min_last5_mcap,         -- peor de sus 5 últimos
+    ROUND(d.median_volume_usd, 0)      AS median_volume_usd,
+    ROUND(d.median_vol_1h_usd, 0)      AS median_vol_1h_usd,
+    ROUND(d.median_lifespan_h, 2)      AS median_lifespan_h,
+    ROUND(d.pumpdump_1h_rate, 3)       AS pumpdump_1h_rate,
+    ROUND(d.migration_rate, 3)         AS migration_rate,   -- informativo (sí/no en %)
+    ROUND(d.organic_rate, 3)           AS organic_rate,
+    ROUND(d.rug_rate, 3)               AS rug_rate,
+    d.median_uniq_traders,
+    d.last_launch_at,
+    d.sample_mints
+FROM dev_agg d
+JOIN recent5 r ON r.creator = d.creator,
+     params
+WHERE d.launches              >= min_launches
+  AND d.span_days             >= min_span_days
+  AND d.launches_per_day      >= min_launches_per_day
+  AND d.median_peak_mcap_repr >= min_median_mcap_usd      -- mediana recortada > 25k
+  AND r.n_last5               =  5                          -- tiene al menos 5 lanzamientos
+  AND r.min_last5_mcap        >= min_last5_min_mcap_usd     -- ninguno de sus 5 últimos < 15k
+  AND d.median_volume_usd     >= min_median_volume_usd
+  AND d.median_vol_1h_usd     >= min_median_vol_1h_usd
+  AND d.pumpdump_1h_rate      <= max_pumpdump_1h_rate
+  AND d.organic_rate          >= min_organic_rate
+  AND d.rug_rate              <= max_rug_rate
+ORDER BY d.launches_per_day DESC, d.median_volume_usd DESC
 LIMIT 100;
 
 -- ============================================================================
