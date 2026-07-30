@@ -17,12 +17,34 @@ from typing import Any
 
 from aiohttp import web
 
-from . import agent, auth, botlink, chain, config, lists, market, ops, profits, wallet
+from . import (
+    agent,
+    auth,
+    botlink,
+    chain,
+    config,
+    lists,
+    market,
+    ops,
+    profits,
+    users,
+    wallet,
+    webauthn_face,
+)
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-PUBLIC_ROUTES = frozenset({("GET", "/"), ("POST", "/api/login"), ("GET", "/api/ping")})
+PUBLIC_ROUTES = frozenset(
+    {
+        ("GET", "/"),
+        ("POST", "/api/login"),
+        ("GET", "/api/ping"),
+        ("GET", "/api/bootstrap"),
+        ("POST", "/api/face/login/options"),
+        ("POST", "/api/face/login/verify"),
+    }
+)
 
 #: Per-session agent conversations. In memory on purpose: the history holds a
 #: live picture of the wallet and has no business being written to disk.
@@ -106,33 +128,46 @@ async def handle_ping(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-async def handle_login(request: web.Request) -> web.Response:
-    body = await request.json()
-    auth_obj = request.app["auth"]
-    ip = _client_ip(request)
-    # Dos puertas: contraseña larga (user+password) o PIN corto desde el móvil.
-    pin = str(body.get("pin", "")).strip()
-    if pin:
-        ok, message = auth_obj.check_pin(ip, pin)
-    else:
-        ok, message = auth_obj.check(ip, str(body.get("user", "")), str(body.get("password", "")))
-    if not ok:
-        logger.warning("Login fallido desde %s", _client_ip(request))
-        return web.json_response({"ok": False, "error": message}, status=401)
+def _host(request: web.Request) -> str:
+    return request.headers.get("X-Forwarded-Host") or request.headers.get("Host") or "localhost"
 
-    token = request.app["auth"].issue_token()
+
+def _login_response(request: web.Request, user: str, remember: bool) -> web.Response:
+    """Emite la cookie de sesión para ``user`` y devuelve quién es + su cargo."""
+    ttl = config.REMEMBER_TTL_SECONDS if remember else config.SHORT_TTL_SECONDS
+    token = request.app["auth"].issue_token(user, ttl)
     _SESSIONS[token] = {"history": [], "seen": time.time()}
-    response = web.json_response({"ok": True})
+    response = web.json_response({"ok": True, "user": user, "role": users.role_of(user)})
     response.set_cookie(
         auth.COOKIE,
         token,
         httponly=True,
         secure=config.COOKIE_SECURE,
         samesite="Lax",
-        max_age=config.SESSION_TTL_SECONDS,
+        # "Recuérdame" => cookie persistente; si no, se borra al cerrar el navegador.
+        max_age=ttl if remember else None,
         path="/",
     )
     return response
+
+
+async def handle_login(request: web.Request) -> web.Response:
+    body = await request.json()
+    auth_obj = request.app["auth"]
+    ip = _client_ip(request)
+    remember = bool(body.get("remember", False))
+    # Tres puertas: usuario+contraseña, PIN corto, o Face ID (por otra ruta).
+    pin = str(body.get("pin", "")).strip()
+    if pin:
+        ok, message, user = auth_obj.check_pin(ip, pin)
+    else:
+        ok, message, user = auth_obj.check(
+            ip, str(body.get("user", "")), str(body.get("password", ""))
+        )
+    if not ok:
+        logger.warning("Login fallido desde %s", ip)
+        return web.json_response({"ok": False, "error": message}, status=401)
+    return _login_response(request, user, remember)
 
 
 async def handle_logout(request: web.Request) -> web.Response:
@@ -140,6 +175,79 @@ async def handle_logout(request: web.Request) -> web.Response:
     response = web.json_response({"ok": True})
     response.del_cookie(auth.COOKIE, path="/")
     return response
+
+
+async def handle_bootstrap(request: web.Request) -> web.Response:
+    """Datos públicos para pintar la pantalla de login (usuarios y si hay cara)."""
+    return web.json_response(
+        {
+            "ok": True,
+            "brand": config.RP_NAME,
+            "users": users.list_users(),
+            "face_available": webauthn_face.available(),
+        }
+    )
+
+
+async def handle_me(request: web.Request) -> web.Response:
+    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    return web.json_response({"ok": True, "user": user, "role": users.role_of(user or "")})
+
+
+# --------------------------------------------------------------------------- #
+# Face ID / huella (WebAuthn)                                                  #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_face_register_options(request: web.Request) -> web.Response:
+    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    if not user:
+        return web.json_response({"ok": False, "error": "login requerido"}, status=401)
+    try:
+        out = webauthn_face.register_options(user, _host(request), config.COOKIE_SECURE)
+    except webauthn_face.FaceError as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    return web.json_response({"ok": True, **out})
+
+
+async def handle_face_register_verify(request: web.Request) -> web.Response:
+    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    if not user:
+        return web.json_response({"ok": False, "error": "login requerido"}, status=401)
+    body = await request.json()
+    try:
+        out = webauthn_face.register_verify(
+            str(body["handle"]), body["credential"], _host(request), config.COOKIE_SECURE
+        )
+    except webauthn_face.FaceError as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    logger.warning("Face ID dado de alta para %s", user)
+    return web.json_response({"ok": True, **out})
+
+
+async def handle_face_login_options(request: web.Request) -> web.Response:
+    body = await request.json()
+    try:
+        out = webauthn_face.login_options(
+            str(body.get("user", "")), _host(request), config.COOKIE_SECURE
+        )
+    except webauthn_face.FaceError as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    return web.json_response({"ok": True, **out})
+
+
+async def handle_face_login_verify(request: web.Request) -> web.Response:
+    body = await request.json()
+    ip = _client_ip(request)
+    try:
+        user = webauthn_face.login_verify(
+            str(body["handle"]), body["credential"], _host(request), config.COOKIE_SECURE
+        )
+    except webauthn_face.FaceError as exc:
+        request.app["auth"].note_failure(ip)
+        logger.warning("Face ID fallido desde %s: %s", ip, exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=401)
+    return _login_response(request, user, bool(body.get("remember", False)))
 
 
 # --------------------------------------------------------------------------- #
@@ -156,10 +264,17 @@ async def handle_state(request: web.Request) -> web.Response:
         except (botlink.BotLinkError, OSError) as exc:
             return {"error": str(exc)}
 
+    me = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
     return web.json_response(
         {
             "ok": True,
             "config": config.public_config(),
+            "me": {
+                "user": me,
+                "role": users.role_of(me or ""),
+                "has_face": webauthn_face.has_passkey(me or ""),
+                "face_available": webauthn_face.available(),
+            },
             "positions": _safe(botlink.live_positions),
             "today": _safe(lambda: botlink.performance(24)),
             "all_time": _safe(lambda: botlink.performance(None)),
@@ -405,8 +520,15 @@ def create_app() -> web.Application:
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/ping", handle_ping)
+    app.router.add_get("/api/bootstrap", handle_bootstrap)
     app.router.add_post("/api/login", handle_login)
     app.router.add_post("/api/logout", handle_logout)
+    app.router.add_get("/api/me", handle_me)
+
+    app.router.add_post("/api/face/register/options", handle_face_register_options)
+    app.router.add_post("/api/face/register/verify", handle_face_register_verify)
+    app.router.add_post("/api/face/login/options", handle_face_login_options)
+    app.router.add_post("/api/face/login/verify", handle_face_login_verify)
 
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/wallet", handle_wallet)

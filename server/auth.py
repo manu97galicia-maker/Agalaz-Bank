@@ -1,20 +1,21 @@
-"""Single-user authentication for a panel that is exposed to the internet.
+"""Autenticación multiusuario para un panel expuesto a internet.
 
-Design notes, because this guards a wallet:
+Guarda un wallet, así que las decisiones importan:
 
-* The password is compared against a PBKDF2-SHA256 hash, never a plaintext
-  env var (a plaintext ``PANEL_PASSWORD`` is accepted for first-run convenience
-  but is hashed at import and the panel nags you to replace it).
-* The session cookie is an HMAC-signed ``expiry.nonce`` token. It is not derived
-  from the password, so rotating the password does not silently keep old
-  sessions alive only if you also rotate the secret -- ``revoke_all()`` does
-  that explicitly.
-* Failed logins are rate-limited per IP with a growing lockout, because a panel
-  on a public IP will get credential-stuffed within hours.
+* Las contraseñas se comparan contra un hash PBKDF2-SHA256, nunca contra texto
+  plano. Los usuarios (Manu, Ricardo…) y sus cargos viven en ``state/users.json``
+  (ver :mod:`server.users`), fuera del repo.
+* La cookie de sesión es un token ``expiry.usuario.nonce`` firmado con HMAC. Al
+  llevar el usuario dentro, el panel sabe quién eres (y qué cargo mostrar) sin
+  guardar estado de sesión en disco.
+* Los fallos de login se limitan por IP con bloqueo creciente.
+* "Recuérdame" solo cambia cuánto dura el token y si la cookie es persistente;
+  no relaja ninguna comprobación.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import os
@@ -27,22 +28,22 @@ from . import config
 COOKIE = "sniper_session"
 _PBKDF2_ROUNDS = 240_000
 
-# Lockout schedule: after N consecutive failures, block for this many seconds.
+# Bloqueo: tras N fallos seguidos, bloquea estos segundos.
 _LOCKOUT_STEPS = ((5, 60), (8, 300), (12, 1800), (20, 21600))
 
 
 def hash_password(password: str, *, salt: bytes | None = None) -> str:
-    """Return a ``pbkdf2_sha256$rounds$salt$hash`` string."""
+    """Devuelve ``pbkdf2_sha256$rounds$salt$hash``."""
     salt = salt or secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ROUNDS)
     return f"pbkdf2_sha256${_PBKDF2_ROUNDS}${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, encoded: str) -> bool:
-    """Constant-time check of a password against an encoded hash."""
+    """Comprobación en tiempo constante de una contraseña contra su hash."""
     try:
         algo, rounds, salt_hex, digest_hex = encoded.split("$")
-    except ValueError:
+    except (ValueError, AttributeError):
         return False
     if algo != "pbkdf2_sha256":
         return False
@@ -63,10 +64,8 @@ class _Attempts:
 
 @dataclass
 class Auth:
-    """Holds the credential material and the per-IP failure counters."""
+    """Material de firma de sesión + contadores de fallo por IP."""
 
-    user: str
-    password_hash: str
     secret: bytes
     pin_hash: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -74,14 +73,10 @@ class Auth:
 
     @classmethod
     def from_config(cls) -> Auth:
+        from . import users  # import tardío: users importa auth
+
         warnings: list[str] = []
-        password_hash = config.PANEL_PASSWORD_HASH.strip()
-        if not password_hash and config.PANEL_PASSWORD:
-            password_hash = hash_password(config.PANEL_PASSWORD)
-            warnings.append(
-                "PANEL_PASSWORD esta en texto plano en .env. Genera un hash con "
-                "`python -m server.hashpw` y usa PANEL_PASSWORD_HASH."
-            )
+
         pin_hash = config.PANEL_PIN_HASH.strip()
         if not pin_hash and config.PANEL_PIN:
             pin_hash = hash_password(config.PANEL_PIN)
@@ -89,32 +84,25 @@ class Auth:
                 "PANEL_PIN esta en texto plano en .env. Genera un hash con "
                 "`python -m server.hashpw --pin` y usa PANEL_PIN_HASH."
             )
+
         secret_raw = config.SESSION_SECRET.strip()
         if not secret_raw:
-            # Ephemeral secret: works, but every restart logs you out.
             secret_raw = secrets.token_hex(32)
             warnings.append(
                 "PANEL_SESSION_SECRET no esta definido: se usa uno temporal y "
                 "cada reinicio cierra la sesion."
             )
-        if not config.PANEL_USER or not password_hash:
+
+        users.seed_if_empty()
+        if not users.list_users():
             warnings.append(
-                "Sin PANEL_USER / PANEL_PASSWORD_HASH el panel queda cerrado a cal "
-                "y canto (ningun login sera valido)."
+                "No hay usuarios configurados. Crea uno con "
+                '`python -m server.users add Manu "Chief Trololo Officer"` o '
+                "pon PANEL_SEED_PASSWORD en el .env."
             )
-        return cls(
-            user=config.PANEL_USER,
-            password_hash=password_hash,
-            secret=secret_raw.encode(),
-            pin_hash=pin_hash,
-            warnings=warnings,
-        )
+        return cls(secret=secret_raw.encode(), pin_hash=pin_hash, warnings=warnings)
 
-    # -- credentials -------------------------------------------------------- #
-
-    @property
-    def configured(self) -> bool:
-        return bool((self.user and self.password_hash) or self.pin_hash)
+    # -- credenciales ------------------------------------------------------- #
 
     def _lockout_remaining(self, ip: str) -> int:
         entry = self._attempts.get(ip)
@@ -122,35 +110,40 @@ class Auth:
             return 0
         return max(0, int(entry.blocked_until - time.time()))
 
-    def check(self, ip: str, user: str, password: str) -> tuple[bool, str]:
-        """Validate credentials. Returns ``(ok, message)``."""
+    def check(self, ip: str, user: str, password: str) -> tuple[bool, str, str]:
+        """Valida usuario+contraseña. Devuelve ``(ok, mensaje, nombre_usuario)``."""
+        from . import users  # import tardío
+
         remaining = self._lockout_remaining(ip)
         if remaining:
-            return False, f"Demasiados intentos. Espera {remaining}s."
-        if not self.configured:
-            return False, "El panel no tiene credenciales configuradas."
-
-        ok_user = hmac.compare_digest(user or "", self.user)
-        ok_password = self.password_hash and verify_password(password or "", self.password_hash)
-        if ok_user and ok_password:
+            return False, f"Demasiados intentos. Espera {remaining}s.", ""
+        record = users.check_password(user, password)
+        if record:
             self._attempts.pop(ip, None)
-            return True, ""
-        return self._fail(ip, "Usuario o contrasena incorrectos.")
+            return True, "", record["user"]
+        ok, msg = self._fail(ip, "Usuario o contraseña incorrectos.")
+        return ok, msg, ""
 
-    def check_pin(self, ip: str, pin: str) -> tuple[bool, str]:
-        """Validate a short PIN login. Same lockout schedule as the password."""
+    def check_pin(self, ip: str, pin: str) -> tuple[bool, str, str]:
+        """Login por PIN corto. Entra como el primer usuario (el dueño)."""
+        from . import users  # import tardío
+
         remaining = self._lockout_remaining(ip)
         if remaining:
-            return False, f"Demasiados intentos. Espera {remaining}s."
+            return False, f"Demasiados intentos. Espera {remaining}s.", ""
         if not self.pin_hash:
-            return False, "No hay PIN configurado."
+            return False, "No hay PIN configurado.", ""
         if verify_password(pin or "", self.pin_hash):
             self._attempts.pop(ip, None)
-            return True, ""
-        return self._fail(ip, "PIN incorrecto.")
+            owners = users.list_users()
+            return True, "", (owners[0]["user"] if owners else "Manu")
+        ok, msg = self._fail(ip, "PIN incorrecto.")
+        return ok, msg, ""
+
+    def note_failure(self, ip: str) -> None:
+        self._fail(ip, "")
 
     def _fail(self, ip: str, message: str) -> tuple[bool, str]:
-        """Record a failed attempt and apply the progressive lockout."""
         entry = self._attempts.setdefault(ip, _Attempts())
         entry.failures += 1
         for threshold, seconds in reversed(_LOCKOUT_STEPS):
@@ -159,32 +152,41 @@ class Auth:
                 break
         return False, message
 
-    # -- sessions ----------------------------------------------------------- #
+    # -- sesiones ----------------------------------------------------------- #
 
-    def issue_token(self) -> str:
-        """Mint a signed session token valid for the configured TTL."""
-        expiry = int(time.time()) + config.SESSION_TTL_SECONDS
-        payload = f"{expiry}.{secrets.token_hex(12)}"
+    def issue_token(self, user: str, ttl_seconds: int) -> str:
+        """Firma un token de sesión que lleva el usuario dentro."""
+        expiry = int(time.time()) + ttl_seconds
+        user_b64 = base64.urlsafe_b64encode(user.encode()).decode().rstrip("=")
+        payload = f"{expiry}.{user_b64}.{secrets.token_hex(9)}"
         signature = hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
         return f"{payload}.{signature}"
 
     def token_valid(self, token: str | None) -> bool:
-        """True if the token signature matches and it has not expired."""
+        return self.token_user(token) is not None
+
+    def token_user(self, token: str | None) -> str | None:
+        """Devuelve el usuario si el token es válido y no ha caducado, si no None."""
         if not token:
-            return False
+            return None
         parts = token.split(".")
-        if len(parts) != 3:
-            return False
-        expiry_raw, nonce, signature = parts
-        payload = f"{expiry_raw}.{nonce}"
+        if len(parts) != 4:
+            return None
+        expiry_raw, user_b64, nonce, signature = parts
+        payload = f"{expiry_raw}.{user_b64}.{nonce}"
         expected = hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
-            return False
+            return None
         try:
-            return int(expiry_raw) > time.time()
+            if int(expiry_raw) <= time.time():
+                return None
         except ValueError:
-            return False
+            return None
+        try:
+            padding = "=" * (-len(user_b64) % 4)
+            return base64.urlsafe_b64decode(user_b64 + padding).decode()
+        except (ValueError, UnicodeDecodeError):
+            return None
 
     def revoke_all(self) -> None:
-        """Invalidate every outstanding session by rotating the signing key."""
         self.secret = os.urandom(32)

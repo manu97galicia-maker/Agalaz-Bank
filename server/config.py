@@ -79,6 +79,19 @@ PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "")
 PANEL_PASSWORD_HASH = os.getenv("PANEL_PASSWORD_HASH", "")
 SESSION_SECRET = os.getenv("PANEL_SESSION_SECRET", "")
 SESSION_TTL_SECONDS = int(os.getenv("PANEL_SESSION_TTL", str(60 * 60 * 24 * 14)))
+#: TTL de la sesión cuando marcas "recuérdame" (por defecto 30 días). Sin
+#: marcarlo, la cookie caduca al cerrar el navegador y el token dura 1 día.
+REMEMBER_TTL_SECONDS = int(os.getenv("PANEL_REMEMBER_TTL", str(60 * 60 * 24 * 30)))
+SHORT_TTL_SECONDS = int(os.getenv("PANEL_SHORT_TTL", str(60 * 60 * 24)))
+
+# --- Face ID / huella (WebAuthn) ---
+#: Nombre e ID del "relying party". El RP_ID debe ser el dominio (sin puerto):
+#: localhost en local, o web-app-datos-franc.vercel.app en producción. Vacío =>
+#: se deriva del Host de cada petición. Nota: WebAuthn NO funciona sobre una IP
+#: pelada, hace falta dominio o localhost + HTTPS.
+RP_NAME = os.getenv("PANEL_RP_NAME", "AGALAZ BANK")
+RP_ID = os.getenv("PANEL_RP_ID", "")
+PASSKEYS_FILE = Path(os.getenv("PANEL_PASSKEYS_FILE", str(APP_ROOT / "state" / "passkeys.json")))
 
 #: PIN corto de 4+ dígitos como atajo de entrada desde el móvil (además de la
 #: contraseña). Va HASHEADO igual que la contraseña; el .env solo guarda el hash.
@@ -87,6 +100,21 @@ PANEL_PIN_HASH = os.getenv("PANEL_PIN_HASH", "")
 #: Solo para primer arranque cómodo: PIN en claro. Se hashea al importar y el
 #: panel te avisa de que lo pases a PANEL_PIN_HASH.
 PANEL_PIN = os.getenv("PANEL_PIN", "")
+
+# --------------------------------------------------------------------------- #
+# Usuarios administradores (multiusuario)                                      #
+# --------------------------------------------------------------------------- #
+#: Fichero con los usuarios y sus cargos (se crea solo, gitignored). Cada
+#: entrada: {"user","role","password_hash"}. Editable con `python -m server.users`.
+USERS_FILE = Path(os.getenv("PANEL_USERS_FILE", str(APP_ROOT / "state" / "users.json")))
+#: Cargos por defecto (no son secreto). Se usan al sembrar usuarios nuevos.
+DEFAULT_ROLES = {
+    "manu": "Chief Trololo Officer",
+    "ricardo": "Chief Technological Trololo Officer",
+}
+#: Si está puesta, en el primer arranque se siembran Manu y Ricardo con esta
+#: contraseña (hasheada). Así no hay ninguna contraseña en claro en el repo.
+SEED_PASSWORD = os.getenv("PANEL_SEED_PASSWORD", "")
 
 # --------------------------------------------------------------------------- #
 # Solana (read-only)                                                           #

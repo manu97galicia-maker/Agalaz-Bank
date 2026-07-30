@@ -12,6 +12,9 @@ dependencies = [
     # Import perezoso en server/wallet.py, así que el resto del panel funciona
     # aunque no esté; sólo hace falta si PANEL_HOT_WALLET=true.
     "solders>=0.21",
+    # Login por cara/huella (Face ID / Windows Hello). Import perezoso en
+    # server/webauthn_face.py: sin él, todo funciona menos el botón de Face ID.
+    "webauthn>=2.0",
 ]
 
 [tool.ruff]

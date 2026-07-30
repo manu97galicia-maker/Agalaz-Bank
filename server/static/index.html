@@ -5,14 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
-<title>Sniper Deck</title>
+<title>AGALAZ BANK</title>
 <style>
   :root{
-    --bg:#0a0c10; --panel:#12161d; --panel-2:#171d26; --line:#232b37;
-    --txt:#e8edf5; --dim:#8b98ab; --accent:#4da3ff;
-    --up:#25d07d; --down:#ff5c5c; --warn:#ffb020;
+    /* AGALAZ BANK — oro sobre negro */
+    --bg:#080706; --panel:#141110; --panel-2:#1e1813; --line:#312820;
+    --txt:#f3e9d4; --dim:#9d8f74; --accent:#e6c15a;
+    --gold-1:#fbe7a8; --gold-2:#d4af37; --gold-3:#9a6a1a;
+    --up:#3ec77e; --down:#ff5c5c; --warn:#e6b24a;
     --radius:12px;
   }
+  .gold{background:linear-gradient(180deg,var(--gold-1),var(--gold-2) 55%,var(--gold-3));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{
@@ -26,17 +30,40 @@
   input,textarea{font:inherit;color:inherit}
 
   /* ---------- login ---------- */
-  #login{display:none;place-items:center;min-height:100dvh;padding:24px}
+  #login{display:none;place-items:center;min-height:100dvh;padding:24px;
+    background:radial-gradient(120% 80% at 50% 0%,#161009 0%,#080706 60%)}
   #login.on{display:grid}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;width:100%;max-width:360px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 24px;
+    width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .brandmark{display:flex;flex-direction:column;align-items:center;margin-bottom:22px}
+  .brandmark svg{width:82px;height:70px;filter:drop-shadow(0 2px 10px rgba(214,175,55,.35))}
+  .wordmark{font-weight:800;letter-spacing:.34em;font-size:22px;margin-top:12px;padding-left:.34em}
+  .subword{letter-spacing:.42em;font-size:12px;color:var(--gold-2);margin-top:3px;padding-left:.42em;font-weight:700}
+  .tag{letter-spacing:.24em;font-size:9px;color:var(--dim);margin-top:8px;text-transform:uppercase}
   .card h1{margin:0 0 4px;font-size:20px;letter-spacing:-.01em}
   .card p{margin:0 0 20px;color:var(--dim);font-size:13px}
   .field{width:100%;padding:12px 14px;margin-bottom:10px;background:var(--bg);
     border:1px solid var(--line);border-radius:10px;outline:none}
   .field:focus{border-color:var(--accent)}
-  .btn{display:block;width:100%;padding:12px;border-radius:10px;background:var(--accent);
-    color:#04121f;font-weight:650;text-align:center}
+  select.field{appearance:none;-webkit-appearance:none}
+  .who-pick{display:flex;gap:8px;margin-bottom:12px}
+  .who-pick button{flex:1;padding:12px 8px;border-radius:12px;border:1px solid var(--line);
+    background:var(--bg);color:var(--dim);text-align:center;line-height:1.25}
+  .who-pick button.on{border-color:var(--gold-2);color:var(--txt);background:#1a140c}
+  .who-pick b{display:block;font-size:14px}
+  .who-pick span{font-size:10px;color:var(--gold-2)}
+  .btn{display:block;width:100%;padding:13px;border-radius:12px;
+    background:linear-gradient(180deg,var(--gold-1),var(--gold-2) 60%,var(--gold-3));
+    color:#1a1200;font-weight:750;text-align:center;letter-spacing:.02em}
   .btn:disabled{opacity:.5;cursor:default}
+  .remember{display:flex;align-items:center;gap:9px;margin:2px 0 14px;color:var(--dim);font-size:13px;cursor:pointer}
+  .remember input{width:18px;height:18px;accent-color:var(--gold-2)}
+  .face-btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:12px;
+    margin-top:10px;border-radius:12px;border:1px solid var(--gold-3);color:var(--gold-1);
+    background:#140f08;font-weight:600}
+  .face-btn:disabled{opacity:.4}
+  .divider{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11px;margin:14px 0}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
 
   /* ---------- shell ---------- */
   #app{display:none;flex-direction:column;min-height:100dvh}
@@ -115,19 +142,41 @@
 
 <div id="login">
   <form class="card" id="loginForm">
-    <h1>Sniper Deck</h1>
-    <p>Panel privado. Acceso restringido.</p>
+    <div class="brandmark">
+      <svg viewBox="0 0 240 200" aria-label="AGALAZ BANK">
+        <defs>
+          <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#fbe7a8"/>
+            <stop offset=".5" stop-color="#d4af37"/>
+            <stop offset="1" stop-color="#8a5a12"/>
+          </linearGradient>
+        </defs>
+        <path d="M120 14 L222 186 L178 186 L120 80 L62 186 L18 186 Z" fill="url(#gold)"/>
+        <path d="M120 96 L141 128 L120 160 L99 128 Z" fill="url(#gold)"/>
+      </svg>
+      <div class="wordmark gold">AGALAZ</div>
+      <div class="subword">BANK</div>
+      <div class="tag">Crypto · Future · Freedom</div>
+    </div>
+
+    <div class="who-pick" id="whoPick"></div>
+
     <div id="pwBox">
-      <input class="field" id="u" placeholder="Usuario" autocomplete="username" autocapitalize="none">
       <input class="field" id="p" type="password" placeholder="Contraseña" autocomplete="current-password">
     </div>
     <div id="pinBox" style="display:none">
       <input class="field mono" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8"
         placeholder="PIN" autocomplete="off" style="text-align:center;letter-spacing:.5em;font-size:22px">
     </div>
+
+    <label class="remember"><input type="checkbox" id="remember" checked> Recuérdame en este dispositivo</label>
+
     <button class="btn" id="loginBtn" type="submit">Entrar</button>
+    <button class="face-btn" id="faceBtn" type="button">🔒 Entrar con Face ID / huella</button>
+
+    <div class="divider" id="pinDiv">o</div>
     <button class="ghost" id="toggleMode" type="button"
-      style="display:block;width:100%;margin-top:10px;text-align:center">Entrar con PIN</button>
+      style="display:block;width:100%;text-align:center">Entrar con PIN</button>
     <p id="loginErr" style="color:var(--down);margin:12px 0 0;font-size:13px"></p>
   </form>
 </div>
@@ -135,9 +184,17 @@
 <div id="app">
   <header>
     <div class="hrow">
-      <span class="dot" id="live"></span>
-      <span class="brand">Sniper Deck</span>
+      <svg viewBox="0 0 240 200" style="width:22px;height:19px;flex:none">
+        <path d="M120 14 L222 186 L178 186 L120 80 L62 186 L18 186 Z" fill="url(#gold)"/>
+        <path d="M120 96 L141 128 L120 160 L99 128 Z" fill="url(#gold)"/>
+      </svg>
+      <div style="min-width:0">
+        <div class="brand gold" style="line-height:1.1;letter-spacing:.12em">AGALAZ BANK</div>
+        <div class="sub" id="whoami" style="font-size:11px"></div>
+      </div>
+      <span class="dot" id="live" style="margin-left:8px"></span>
       <span class="spacer"></span>
+      <button class="ghost" id="enrollFace" style="display:none;border-color:var(--gold-3);color:var(--gold-1)">＋ Face ID</button>
       <button class="ghost" id="refresh">Actualizar</button>
       <button class="ghost" id="logout">Salir</button>
     </div>
@@ -341,31 +398,101 @@ function show(which) {
 }
 
 /* ------------------------------- login ------------------------------- */
-let pinMode = false;
+let pinMode = false, selectedUser = null, faceAvailable = false;
+const err = m => $("#loginErr").textContent = m;
+
+// base64url <-> ArrayBuffer para WebAuthn
+const b64uToBuf = s => { s = s.replace(/-/g,"+").replace(/_/g,"/"); const pad="=".repeat((4-s.length%4)%4); const bin=atob(s+pad); const b=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i); return b.buffer; };
+const bufToB64u = buf => { const b=new Uint8Array(buf); let s=""; for(const x of b)s+=String.fromCharCode(x); return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); };
+
+async function loadBootstrap() {
+  try {
+    const b = await api("/api/bootstrap");
+    faceAvailable = b.face_available;
+    const box = $("#whoPick"); box.innerHTML = "";
+    for (const u of b.users) {
+      const btn = el("button", null); btn.type = "button";
+      btn.innerHTML = `<b>${u.user}</b><span>${u.role || ""}</span>`;
+      btn.onclick = () => { selectedUser = u.user; document.querySelectorAll("#whoPick button").forEach(x=>x.classList.toggle("on",x===btn)); };
+      box.appendChild(btn);
+    }
+    if (b.users[0]) { selectedUser = b.users[0].user; box.firstChild.classList.add("on"); }
+    $("#faceBtn").style.display = faceAvailable ? "flex" : "none";
+  } catch (e) { /* login aun asi */ }
+}
+
 $("#toggleMode").onclick = () => {
   pinMode = !pinMode;
   $("#pwBox").style.display = pinMode ? "none" : "block";
+  $("#whoPick").style.display = pinMode ? "none" : "flex";
   $("#pinBox").style.display = pinMode ? "block" : "none";
   $("#toggleMode").textContent = pinMode ? "Entrar con contraseña" : "Entrar con PIN";
-  (pinMode ? $("#pin") : $("#u")).focus();
+  (pinMode ? $("#pin") : $("#p")).focus();
 };
 
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
-  $("#loginBtn").disabled = true;
-  $("#loginErr").textContent = "";
-  const body = pinMode ? { pin: $("#pin").value } : { user: $("#u").value, password: $("#p").value };
+  $("#loginBtn").disabled = true; err("");
+  const remember = $("#remember").checked;
+  const body = pinMode ? { pin: $("#pin").value, remember }
+                       : { user: selectedUser, password: $("#p").value, remember };
   try {
-    await api("/api/login", { method: "POST", body: JSON.stringify(body) });
+    const out = await api("/api/login", { method: "POST", body: JSON.stringify(body) });
     $("#p").value = ""; $("#pin").value = "";
-    show("app");
-    refresh();
-  } catch (err) {
-    $("#loginErr").textContent = err.message;
-  } finally {
-    $("#loginBtn").disabled = false;
-  }
+    enterApp(out);
+  } catch (e) { err(e.message); } finally { $("#loginBtn").disabled = false; }
 });
+
+$("#faceBtn").onclick = async () => {
+  err("");
+  if (!selectedUser) return err("Elige un usuario primero.");
+  try {
+    const opt = await api("/api/face/login/options", { method: "POST", body: JSON.stringify({ user: selectedUser }) });
+    const o = opt.options;
+    o.challenge = b64uToBuf(o.challenge);
+    (o.allowCredentials || []).forEach(c => c.id = b64uToBuf(c.id));
+    const cred = await navigator.credentials.get({ publicKey: o });
+    const payload = {
+      id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        authenticatorData: bufToB64u(cred.response.authenticatorData),
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        signature: bufToB64u(cred.response.signature),
+        userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+      },
+    };
+    const out = await api("/api/face/login/verify", { method: "POST", body: JSON.stringify({ handle: opt.handle, credential: payload, remember: $("#remember").checked }) });
+    enterApp(out);
+  } catch (e) { err("Face ID: " + (e.message || e.name)); }
+};
+
+async function enrollFace() {
+  try {
+    const opt = await api("/api/face/register/options", { method: "POST" });
+    const o = opt.options;
+    o.challenge = b64uToBuf(o.challenge);
+    o.user.id = b64uToBuf(o.user.id);
+    (o.excludeCredentials || []).forEach(c => c.id = b64uToBuf(c.id));
+    const cred = await navigator.credentials.create({ publicKey: o });
+    const payload = {
+      id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        attestationObject: bufToB64u(cred.response.attestationObject),
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+      },
+    };
+    await api("/api/face/register/verify", { method: "POST", body: JSON.stringify({ handle: opt.handle, credential: payload }) });
+    toast("Face ID activado ✓ Ya puedes entrar con la cara.");
+    $("#enrollFace").style.display = "none";
+  } catch (e) { toast("No se pudo activar Face ID: " + (e.message || e.name), true); }
+}
+$("#enrollFace").onclick = enrollFace;
+
+function enterApp(me) {
+  if (me && me.user) $("#whoami").textContent = me.user + (me.role ? " · " + me.role : "");
+  show("app");
+  refresh();
+}
 
 $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); show("login"); };
 
@@ -861,6 +988,10 @@ async function refresh() {
   try {
     state = await api("/api/state");
     $("#live").classList.remove("off");
+    if (state.me && state.me.user) {
+      $("#whoami").textContent = state.me.user + (state.me.role ? " · " + state.me.role : "");
+      $("#enrollFace").style.display = (state.me.face_available && !state.me.has_face) ? "" : "none";
+    }
     renderStats($("#statsToday"), state.today);
     renderStats($("#statsAll"), state.all_time);
     renderPositions(state.positions);
@@ -878,7 +1009,7 @@ async function refresh() {
 setInterval(() => { if ($("#app").classList.contains("on") && !document.hidden) refresh(); }, 15000);
 $("#refresh").onclick = refresh;
 
-api("/api/state").then(() => { show("app"); refresh(); }).catch(() => show("login"));
+api("/api/state").then(() => { show("app"); refresh(); }).catch(() => { show("login"); loadBootstrap(); });
 </script>
 </body>
 </html>
