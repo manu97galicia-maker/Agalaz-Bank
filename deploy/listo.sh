@@ -70,9 +70,28 @@ set_env PANEL_HOT_WALLET false
 # --------------------------------------------------------------------------- #
 step "4/7  Usuarios (esto es lo que arregla el login)"
 # --------------------------------------------------------------------------- #
+# Si no hay contrasena y hay a alguien delante, se pide aqui en vez de mandarle a
+# editar un fichero y relanzar. Se lee sin eco y va directa al .env: nunca pasa
+# por la linea de comandos, que quedaria en el historial del shell.
+if ! grep -q '^PANEL_SEED_PASSWORD=.\+' .env && [ -t 0 ]; then
+  echo "       No hay contrasena configurada todavia."
+  while :; do
+    read -rsp "       Contrasena para entrar al panel: " PW1; echo
+    if [ "${#PW1}" -lt 8 ]; then
+      echo "       Demasiado corta (minimo 8). Esto guarda un wallet."
+      continue
+    fi
+    read -rsp "       Repitela: " PW2; echo
+    [ "$PW1" = "$PW2" ] && break
+    echo "       No coinciden."
+  done
+  set_env PANEL_SEED_PASSWORD "$PW1"
+  unset PW1 PW2
+fi
+
 if grep -q '^PANEL_SEED_PASSWORD=.\+' .env; then
   if ./.venv/bin/python -m server.users sync 2>&1 | sed 's/^/       /'; then
-    ok "usuarios creados con PANEL_SEED_PASSWORD"
+    ok "usuarios creados con esa contrasena"
   else
     bad "no pude crear los usuarios"; FAILED=1
   fi
