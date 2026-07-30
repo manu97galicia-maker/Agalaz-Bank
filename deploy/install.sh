@@ -19,7 +19,9 @@ apt-get install -y -qq python3-venv python3-pip
 echo "==> Entorno virtual"
 [ -d .venv ] || python3 -m venv .venv
 ./.venv/bin/pip install --quiet --upgrade pip
-./.venv/bin/pip install --quiet aiohttp PyYAML anthropic
+# solders = firma de la wallet caliente (compra/venta/envío). Si falla la rueda
+# en este Ubuntu, el resto del panel sigue funcionando (import perezoso).
+./.venv/bin/pip install --quiet aiohttp PyYAML anthropic solders
 
 if [ ! -f .env ]; then
   echo "==> Creando .env desde la plantilla"
