@@ -1,8 +1,9 @@
 """HTTP layer: auth middleware, JSON API and the single-page UI.
 
-Every route except the login page requires a valid session cookie. There is no
-"localhost is trusted" shortcut -- this panel is meant to be reached from a
-phone over the internet, so the same rules apply to every caller.
+Every route except the login page requires a valid session, carried either in a
+cookie or in an ``Authorization: Bearer`` header (see :func:`_request_token`).
+There is no "localhost is trusted" shortcut -- this panel is meant to be reached
+from a phone over the internet, so the same rules apply to every caller.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ _SESSION_TTL = 60 * 60 * 12
 
 
 def _session(request: web.Request) -> dict[str, Any]:
-    token = request.cookies.get(auth.COOKIE, "")
+    token = _request_token(request)
     now = time.time()
     for key in [k for k, v in _SESSIONS.items() if now - v["seen"] > _SESSION_TTL]:
         _SESSIONS.pop(key, None)
@@ -69,6 +70,25 @@ def _client_ip(request: web.Request) -> str:
     return request.remote or "?"
 
 
+def _request_token(request: web.Request) -> str:
+    """Token de sesión de la petición.
+
+    Se lee primero de la cabecera ``Authorization: Bearer`` y, si no, de la
+    cookie. La cabecera es imprescindible cuando el panel se sirve detrás del
+    proxy de Vercel: sus *rewrites* hacia un backend externo (el droplet) se
+    comen la cabecera ``Set-Cookie`` de la respuesta, así que la cookie nunca
+    llega al navegador. Devolviendo el token en el cuerpo del login y
+    reenviándolo aquí como Bearer, la sesión sobrevive al proxy. La cookie se
+    mantiene para el acceso directo por dominio (Caddy) sin proxy de por medio.
+    """
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        token = header[7:].strip()
+        if token:
+            return token
+    return request.cookies.get(auth.COOKIE, "")
+
+
 # --------------------------------------------------------------------------- #
 # Middleware                                                                  #
 # --------------------------------------------------------------------------- #
@@ -81,7 +101,7 @@ async def auth_middleware(
     """Reject anything without a valid session, except the login surface."""
     if (request.method, request.path) in PUBLIC_ROUTES or request.path.startswith("/favicon"):
         return await handler(request)
-    if request.app["auth"].token_valid(request.cookies.get(auth.COOKIE)):
+    if request.app["auth"].token_valid(_request_token(request)):
         return await handler(request)
     return web.json_response({"ok": False, "error": "login requerido"}, status=401)
 
@@ -137,7 +157,12 @@ def _login_response(request: web.Request, user: str, remember: bool) -> web.Resp
     ttl = config.REMEMBER_TTL_SECONDS if remember else config.SHORT_TTL_SECONDS
     token = request.app["auth"].issue_token(user, ttl)
     _SESSIONS[token] = {"history": [], "seen": time.time()}
-    response = web.json_response({"ok": True, "user": user, "role": users.role_of(user)})
+    # El token viaja también en el cuerpo: es la única vía que sobrevive al
+    # proxy de Vercel (que elimina Set-Cookie). El cliente lo guarda y lo
+    # reenvía como ``Authorization: Bearer``.
+    response = web.json_response(
+        {"ok": True, "user": user, "role": users.role_of(user), "token": token}
+    )
     response.set_cookie(
         auth.COOKIE,
         token,
@@ -171,7 +196,7 @@ async def handle_login(request: web.Request) -> web.Response:
 
 
 async def handle_logout(request: web.Request) -> web.Response:
-    _SESSIONS.pop(request.cookies.get(auth.COOKIE, ""), None)
+    _SESSIONS.pop(_request_token(request), None)
     response = web.json_response({"ok": True})
     response.del_cookie(auth.COOKIE, path="/")
     return response
@@ -190,7 +215,7 @@ async def handle_bootstrap(request: web.Request) -> web.Response:
 
 
 async def handle_me(request: web.Request) -> web.Response:
-    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    user = request.app["auth"].token_user(_request_token(request))
     return web.json_response({"ok": True, "user": user, "role": users.role_of(user or "")})
 
 
@@ -200,7 +225,7 @@ async def handle_me(request: web.Request) -> web.Response:
 
 
 async def handle_face_register_options(request: web.Request) -> web.Response:
-    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    user = request.app["auth"].token_user(_request_token(request))
     if not user:
         return web.json_response({"ok": False, "error": "login requerido"}, status=401)
     try:
@@ -211,7 +236,7 @@ async def handle_face_register_options(request: web.Request) -> web.Response:
 
 
 async def handle_face_register_verify(request: web.Request) -> web.Response:
-    user = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    user = request.app["auth"].token_user(_request_token(request))
     if not user:
         return web.json_response({"ok": False, "error": "login requerido"}, status=401)
     body = await request.json()
@@ -264,7 +289,7 @@ async def handle_state(request: web.Request) -> web.Response:
         except (botlink.BotLinkError, OSError) as exc:
             return {"error": str(exc)}
 
-    me = request.app["auth"].token_user(request.cookies.get(auth.COOKIE))
+    me = request.app["auth"].token_user(_request_token(request))
     return web.json_response(
         {
             "ok": True,

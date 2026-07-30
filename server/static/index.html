@@ -384,9 +384,24 @@ function toast(text, bad) {
   setTimeout(() => t.remove(), bad ? 6000 : 3000);
 }
 
+// El token de sesión también se guarda aquí y viaja como cabecera Bearer. Es
+// imprescindible detrás del proxy de Vercel: sus rewrites hacia el droplet se
+// comen la cabecera Set-Cookie, así que la cookie nunca se guarda. Con el token
+// en localStorage + Authorization, la sesión sobrevive al proxy.
+let sessionToken = localStorage.getItem("agalaz_token") || "";
+function setToken(t) {
+  sessionToken = t || "";
+  if (sessionToken) localStorage.setItem("agalaz_token", sessionToken);
+  else localStorage.removeItem("agalaz_token");
+}
+
 async function api(path, options) {
-  const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
-  if (res.status === 401) { show("login"); throw new Error("Sesión caducada"); }
+  const headers = { "Content-Type": "application/json" };
+  if (sessionToken) headers["Authorization"] = "Bearer " + sessionToken;
+  const opts = Object.assign({}, options);
+  opts.headers = Object.assign(headers, opts.headers);
+  const res = await fetch(path, opts);
+  if (res.status === 401) { setToken(""); show("login"); throw new Error("Sesión caducada"); }
   const body = await res.json().catch(() => ({ error: "respuesta no válida" }));
   if (!res.ok || body.ok === false) throw new Error(body.error || ("HTTP " + res.status));
   return body;
@@ -489,12 +504,13 @@ async function enrollFace() {
 $("#enrollFace").onclick = enrollFace;
 
 function enterApp(me) {
+  if (me && me.token) setToken(me.token);
   if (me && me.user) $("#whoami").textContent = me.user + (me.role ? " · " + me.role : "");
   show("app");
   refresh();
 }
 
-$("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); show("login"); };
+$("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); setToken(""); show("login"); };
 
 /* -------------------------------- tabs ------------------------------- */
 document.querySelectorAll("nav button").forEach(b => {
