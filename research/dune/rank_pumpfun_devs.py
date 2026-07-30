@@ -144,21 +144,22 @@ def dex_paid_rate(mints: list[str], max_tokens: int, sleep_s: float) -> tuple[fl
 # Score compuesto                                                             #
 # --------------------------------------------------------------------------- #
 def score(row: dict) -> float:
-    """Score 0-100 transparente: calidad de tamaño, consistencia y limpieza."""
+    """Score 0-100 transparente: frecuencia, volumen, limpieza (no pump&dump)."""
     def f(k, d=0.0):
         try:
             return float(row.get(k) or d)
         except (TypeError, ValueError):
             return d
     mcap = min(f("median_peak_mcap_usd") / 100000.0, 1.0)          # 0..1 (tope 100k)
-    freq = 1.0 - min(abs(f("launches_per_day") - 1.0), 1.0)         # cerca de 1/día mejor
+    freq = min(f("launches_per_day") / 3.0, 1.0)                    # más frecuente, mejor
     life = min(f("median_lifespan_h") / 12.0, 1.0)                  # 0..1 (tope 12h)
-    mig  = f("migration_rate")
+    vol  = min(f("median_volume_usd") / 50000.0, 1.0)              # 0..1 (tope 50k)
+    no_pd = 1.0 - f("pumpdump_1h_rate")                            # sin pump&dump 1ª hora
     org  = f("organic_rate")
     norug = 1.0 - f("rug_rate")
     dexp = f("dex_paid_rate")
-    return round(100 * (0.22*mcap + 0.12*freq + 0.14*life +
-                        0.16*mig + 0.16*org + 0.10*norug + 0.10*dexp), 1)
+    return round(100 * (0.12*mcap + 0.12*freq + 0.09*life + 0.15*vol +
+                        0.18*no_pd + 0.16*org + 0.08*norug + 0.10*dexp), 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +203,8 @@ def main() -> int:
     kept.sort(key=lambda r: r.get("score", 0), reverse=True)
 
     cols = ["score", "creator", "launches", "launches_per_day", "median_peak_mcap_usd",
-            "median_lifespan_h", "migration_rate", "organic_rate", "rug_rate",
+            "median_volume_usd", "median_vol_1h_usd", "median_lifespan_h",
+            "pumpdump_1h_rate", "organic_rate", "rug_rate", "migration_rate",
             "dex_paid_rate", "dex_checked", "median_uniq_traders", "last_launch_at"]
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
@@ -211,16 +213,17 @@ def main() -> int:
 
     print(f"\n{len(kept)}/{len(rows)} devs pasan el filtro de DexScreener. CSV -> {args.out}")
     print("\nTOP 20:")
-    print(f"{'score':>5}  {'creator':<44} {'/día':>5} {'MC med':>9} {'vida h':>6} "
-          f"{'mig':>4} {'org':>4} {'rug':>4} {'dex':>4}")
+    print(f"{'score':>5}  {'creator':<44} {'/día':>5} {'MC med':>9} {'vol med':>9} "
+          f"{'p&d1h':>5} {'org':>4} {'rug':>4} {'mig':>4} {'dex':>4}")
     for r in kept[:20]:
         print(f"{r['score']:>5}  {str(r.get('creator','')):<44} "
               f"{float(r.get('launches_per_day',0)):>5.2f} "
               f"{float(r.get('median_peak_mcap_usd',0)):>9,.0f} "
-              f"{float(r.get('median_lifespan_h',0)):>6.1f} "
-              f"{float(r.get('migration_rate',0)):>4.0%} "
+              f"{float(r.get('median_volume_usd',0)):>9,.0f} "
+              f"{float(r.get('pumpdump_1h_rate',0)):>5.0%} "
               f"{float(r.get('organic_rate',0)):>4.0%} "
               f"{float(r.get('rug_rate',0)):>4.0%} "
+              f"{float(r.get('migration_rate',0)):>4.0%} "
               f"{float(r.get('dex_paid_rate',0)):>4.0%}")
     return 0
 

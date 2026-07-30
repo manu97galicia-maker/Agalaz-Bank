@@ -5,17 +5,26 @@ seguir/snipear, filtrando por consistencia, tamaño y limpieza.
 
 ## Criterio (lo que pediste)
 
+Devuelve los **100 devs más frecuentes** que además sean sanos y orgánicos.
+
 | Criterio | Regla por defecto | Dónde |
 |---|---|---|
-| Frecuencia | ~1 lanzamiento/día (0.5–3), consistente ≥14 días, ≥10 tokens | SQL |
-| Tamaño | mediana del **market-cap máximo** ≥ 40.000 USD | SQL |
-| Migra a DEX | ≥50% de sus tokens migran a Raydium/PumpSwap | SQL |
-| Vida | mediana de vida del token > 3h | SQL |
-| Sin dump/rug | ≤20% de tokens "rug" (muere <30 min, no arranca, o dev vende fuerte) | SQL |
+| Frecuente | ≥0.5 lanzamientos/día, consistente ≥14 días, ≥15 tokens | SQL |
+| **Sin pump&dump 1ª hora** | ≤10% de tokens pumpean y se desploman en <60 min | SQL |
+| Con volumen | mediana de volumen/token ≥ 15k y ≥ 3k en la 1ª hora | SQL |
 | Orgánico | ≥70% sin bundle/snipe del dev en el slot de creación | SQL |
+| Sano / sin rug | ≤20% de tokens "rug" (muere <30 min, no arranca, o dev vende fuerte) | SQL |
+| Tamaño | mediana del market-cap máximo ≥ 25k USD | SQL |
+| Migración | **informativa** (columna migration_rate), NO obligatoria | SQL |
 | Paga DexScreener | ≥50% de tokens con Enhanced Token Info **pagado** (status=approved) | script |
 
+Orden: por **frecuencia** (los más frecuentes primero), LIMIT 100.
 Todos los umbrales son ajustables (parámetros `<<<` en el `.sql` y flags del script).
+
+### Cómo se detecta el "pump&dump de la 1ª hora"
+Para cada token, dentro de los primeros 60 minutos: si el pico de precio es ≥2×
+el primer precio (pumpeó) **y** cierra la hora por debajo del 30% de ese pico
+(se desplomó), se marca como pump&dump. Un dev "sano" casi nunca lo hace.
 
 ## Cómo se mide cada cosa (resumen honesto)
 
