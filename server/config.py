@@ -91,6 +91,12 @@ SHORT_TTL_SECONDS = int(os.getenv("PANEL_SHORT_TTL", str(60 * 60 * 24)))
 #: pelada, hace falta dominio o localhost + HTTPS.
 RP_NAME = os.getenv("PANEL_RP_NAME", "AGALAZ BANK")
 RP_ID = os.getenv("PANEL_RP_ID", "")
+#: Origen (esquema+dominio) tal y como lo ve el NAVEGADOR, p.ej.
+#: ``https://web-app-datos-franc.vercel.app``. Imprescindible detrás del proxy
+#: de Vercel: el droplet solo ve su propio Host (la IP), así que no puede
+#: reconstruir el origen real. Vacío => se deriva de RP_ID (``https://<rp_id>``)
+#: y, si tampoco, del Host de la petición (válido solo en acceso directo).
+RP_ORIGIN = os.getenv("PANEL_RP_ORIGIN", "")
 PASSKEYS_FILE = Path(os.getenv("PANEL_PASSKEYS_FILE", str(APP_ROOT / "state" / "passkeys.json")))
 
 #: PIN corto de 4+ dígitos como atajo de entrada desde el móvil (además de la

@@ -81,6 +81,28 @@ def _origin(host: str, secure: bool) -> str:
     return f"{scheme}://{host}"
 
 
+def _expected_origins(host: str, secure: bool) -> list[str]:
+    """Orígenes aceptables al verificar una passkey.
+
+    Detrás del proxy de Vercel el droplet ve su propio ``Host`` (la IP), no el
+    dominio del navegador, así que derivar el origen del ``Host`` da un valor
+    que nunca coincide con el ``clientDataJSON.origin`` real. Por eso se aceptan,
+    en orden: el ``PANEL_RP_ORIGIN`` explícito, el derivado de ``PANEL_RP_ID``
+    (``https://<rp_id>``) y, como último recurso, el del ``Host`` de la petición
+    (que basta en acceso directo por dominio, sin proxy).
+    """
+    candidates = [
+        config.RP_ORIGIN.rstrip("/"),
+        f"https://{config.RP_ID}" if config.RP_ID else "",
+        _origin(host, secure),
+    ]
+    out: list[str] = []
+    for origin in candidates:
+        if origin and origin not in out:
+            out.append(origin)
+    return out
+
+
 def _new_challenge(user: str, kind: str, challenge: bytes) -> str:
     _expire()
     handle = secrets.token_urlsafe(12)
@@ -149,7 +171,7 @@ def register_verify(handle: str, credential: dict[str, Any], host: str, secure: 
             credential=credential,
             expected_challenge=entry["challenge"],
             expected_rp_id=_rp_id(host),
-            expected_origin=_origin(host, secure),
+            expected_origin=_expected_origins(host, secure),
         )
     except Exception as exc:  # noqa: BLE001 -- fail-closed: cualquier error = no alta
         raise FaceError(f"No pude verificar el registro: {exc}") from exc
@@ -218,7 +240,7 @@ def login_verify(handle: str, credential: dict[str, Any], host: str, secure: boo
             credential=credential,
             expected_challenge=entry["challenge"],
             expected_rp_id=_rp_id(host),
-            expected_origin=_origin(host, secure),
+            expected_origin=_expected_origins(host, secure),
             credential_public_key=_unb64u(stored["public_key"]),
             credential_current_sign_count=stored["sign_count"],
             require_user_verification=True,
