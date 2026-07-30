@@ -57,8 +57,10 @@ set_env() {  # set_env CLAVE valor
 
 grep -q '^PANEL_SESSION_SECRET=.\+' .env || set_env PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
 set_env BOT_REPO "$BOT_REPO"
-set_env PANEL_HOST 127.0.0.1        # solo loopback: a 8080 no se llega desde fuera
-set_env PANEL_COOKIE_SECURE true    # el navegador entra por HTTPS
+set_env PANEL_COOKIE_SECURE true    # el navegador entra por HTTPS (Vercel)
+# OJO: el panel se queda accesible desde fuera hasta que el HTTPS este VERIFICADO
+# (paso 6). Cerrarlo antes te deja sin ninguna via de entrada si Caddy falla.
+grep -q '^PANEL_HOST=' .env || set_env PANEL_HOST 0.0.0.0
 ok "credenciales de sesion y rutas puestas"
 
 [ -d "$BOT_REPO" ] && ok "bot encontrado en $BOT_REPO" \
@@ -170,6 +172,20 @@ else
       done
       if [ "$HTTPS_OK" = 1 ]; then
         ok "HTTPS funcionando en https://${API_HOST}"
+        # Solo AHORA, con el camino cifrado comprobado, se repliega el panel a
+        # loopback. Antes de este punto habria sido dejarse fuera uno mismo.
+        set_env PANEL_HOST 127.0.0.1
+        systemctl restart sniper-deck
+        sleep 2
+        if curl -fsS --max-time 10 "https://${API_HOST}/api/ping" >/dev/null 2>&1; then
+          ok "panel replegado a 127.0.0.1, solo accesible a traves de Caddy"
+        else
+          warn "tras replegar a loopback el HTTPS dejo de responder; vuelvo a abrirlo"
+          set_env PANEL_HOST 0.0.0.0
+          systemctl restart sniper-deck
+          HTTPS_OK=0
+          FAILED=1
+        fi
       else
         bad "Caddy no consiguio el certificado. Mira:  journalctl -u caddy -n 40 --no-pager"
         [ "${API_HOST}" != "${API_HOST%sslip.io}" ] && \
@@ -201,8 +217,15 @@ if [ "$HTTPS_OK" = 1 ] && command -v ufw >/dev/null 2>&1; then
     ok "8080 cerrado a internet; solo 22/80/443"
   fi
 elif [ "$HTTPS_OK" != 1 ]; then
-  warn "no cierro el 8080 todavia: sin HTTPS te quedarias sin acceso."
+  warn "no cierro el 8080: sin HTTPS te quedarias sin acceso al panel."
+  set_env PANEL_HOST 0.0.0.0
+  systemctl restart sniper-deck >/dev/null 2>&1
   ufw allow 8080/tcp >/dev/null 2>&1 || true
+  if curl -fsS --max-time 8 "http://${MY_IP}:8080/api/ping" >/dev/null 2>&1; then
+    ok "el panel sigue accesible por http://${MY_IP}:8080 (sin cifrar)"
+  else
+    bad "el panel NO responde desde fuera. Revisa: journalctl -u sniper-deck -n 40 --no-pager"
+  fi
 fi
 
 # --------------------------------------------------------------------------- #
