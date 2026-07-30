@@ -406,9 +406,23 @@ async function api(path, options) {
   if (sessionToken) headers["Authorization"] = "Bearer " + sessionToken;
   const opts = Object.assign({}, options);
   opts.headers = Object.assign(headers, opts.headers);
-  const res = await fetch(path, opts);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    // fetch solo lanza por fallo de red: el droplet no responde nada.
+    throw new Error("No se pudo contactar con el servidor (¿droplet apagado?).");
+  }
   if (res.status === 401) { setToken(""); show("login"); throw new Error("Sesión caducada"); }
-  const body = await res.json().catch(() => ({ error: "respuesta no válida" }));
+  // Si la respuesta no es JSON casi siempre es el proxy de Vercel devolviendo su
+  // propia página de error porque no alcanza al droplet (caído o puerto cerrado).
+  const ctype = res.headers.get("content-type") || "";
+  let body = null;
+  if (ctype.includes("application/json")) body = await res.json().catch(() => null);
+  if (body === null) {
+    throw new Error("El servidor no respondió bien (HTTP " + res.status +
+      "). Revisa que el droplet esté encendido y el puerto 8080 abierto.");
+  }
   if (!res.ok || body.ok === false) throw new Error(body.error || ("HTTP " + res.status));
   return body;
 }
