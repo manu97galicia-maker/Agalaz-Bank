@@ -80,6 +80,14 @@ PANEL_PASSWORD_HASH = os.getenv("PANEL_PASSWORD_HASH", "")
 SESSION_SECRET = os.getenv("PANEL_SESSION_SECRET", "")
 SESSION_TTL_SECONDS = int(os.getenv("PANEL_SESSION_TTL", str(60 * 60 * 24 * 14)))
 
+#: PIN corto de 4+ dígitos como atajo de entrada desde el móvil (además de la
+#: contraseña). Va HASHEADO igual que la contraseña; el .env solo guarda el hash.
+#: Genera el hash con `python -m server.hashpw --pin`.
+PANEL_PIN_HASH = os.getenv("PANEL_PIN_HASH", "")
+#: Solo para primer arranque cómodo: PIN en claro. Se hashea al importar y el
+#: panel te avisa de que lo pases a PANEL_PIN_HASH.
+PANEL_PIN = os.getenv("PANEL_PIN", "")
+
 # --------------------------------------------------------------------------- #
 # Solana (read-only)                                                           #
 # --------------------------------------------------------------------------- #
@@ -89,6 +97,32 @@ RPC_ENDPOINT = bot_env("SOLANA_NODE_RPC_ENDPOINT") or FALLBACK_RPC
 #: Set explicitly to avoid touching the private key at all.
 WALLET_PUBKEY = os.getenv("PANEL_WALLET_PUBKEY", "")
 JUPITER_PRICE_API = os.getenv("JUPITER_PRICE_API", "https://lite-api.jup.ag/price/v3")
+JUPITER_API = os.getenv("JUPITER_API", "https://lite-api.jup.ag")
+
+# --------------------------------------------------------------------------- #
+# Wallet caliente (FIRMA transacciones reales)                                 #
+# --------------------------------------------------------------------------- #
+#
+# ¡Ojo! Con esto en true la web PUEDE MOVER TU DINERO: compra, vende y envía SOL
+# firmando con la clave privada del bot. Si comprometen el panel, pueden vaciar
+# el wallet. Está APAGADO por defecto a propósito: enciéndelo tú, a conciencia.
+HOT_WALLET = _flag("PANEL_HOT_WALLET", False)
+#: Clave privada que firma. Por defecto reutiliza la MISMA del bot (un solo
+#: sitio con el secreto). Puedes poner otra en el .env del panel si quieres una
+#: wallet aparte para operar a mano.
+def wallet_secret() -> str:
+    return os.getenv("PANEL_WALLET_SECRET") or bot_env("SOLANA_PRIVATE_KEY")
+
+#: Topes de seguridad para una compra manual desde la web. Una web con un botón
+#: que gasta SOL real necesita un límite duro por si un dedo resbala.
+MAX_BUY_SOL = float(os.getenv("PANEL_MAX_BUY_SOL", "1.0"))
+DEFAULT_BUY_SLIPPAGE_BPS = int(os.getenv("PANEL_BUY_SLIPPAGE_BPS", "1500"))   # 15%
+DEFAULT_SELL_SLIPPAGE_BPS = int(os.getenv("PANEL_SELL_SLIPPAGE_BPS", "2500"))  # 25%
+#: Fee de prioridad (lamports) que Jupiter añade para que la tx entre rápido.
+PRIORITY_FEE_LAMPORTS = int(os.getenv("PANEL_PRIORITY_FEE_LAMPORTS", "2000000"))
+
+#: Dónde guarda el panel su propio estado editable (reparto de ganancias, etc.).
+STATE_DIR = Path(os.getenv("PANEL_STATE_DIR", str(APP_ROOT / "state")))
 
 # --------------------------------------------------------------------------- #
 # Agent                                                                        #
@@ -124,4 +158,6 @@ def public_config() -> dict[str, Any]:
         "agent_model": AGENT_MODEL,
         "shell_enabled": AGENT_ALLOW_SHELL,
         "rpc_configured": RPC_ENDPOINT != FALLBACK_RPC,
+        "hot_wallet": HOT_WALLET,
+        "max_buy_sol": MAX_BUY_SOL,
     }

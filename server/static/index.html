@@ -117,9 +117,17 @@
   <form class="card" id="loginForm">
     <h1>Sniper Deck</h1>
     <p>Panel privado. Acceso restringido.</p>
-    <input class="field" id="u" placeholder="Usuario" autocomplete="username" autocapitalize="none">
-    <input class="field" id="p" type="password" placeholder="Contraseña" autocomplete="current-password">
-    <button class="btn" id="loginBtn">Entrar</button>
+    <div id="pwBox">
+      <input class="field" id="u" placeholder="Usuario" autocomplete="username" autocapitalize="none">
+      <input class="field" id="p" type="password" placeholder="Contraseña" autocomplete="current-password">
+    </div>
+    <div id="pinBox" style="display:none">
+      <input class="field mono" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8"
+        placeholder="PIN" autocomplete="off" style="text-align:center;letter-spacing:.5em;font-size:22px">
+    </div>
+    <button class="btn" id="loginBtn" type="submit">Entrar</button>
+    <button class="ghost" id="toggleMode" type="button"
+      style="display:block;width:100%;margin-top:10px;text-align:center">Entrar con PIN</button>
     <p id="loginErr" style="color:var(--down);margin:12px 0 0;font-size:13px"></p>
   </form>
 </div>
@@ -135,7 +143,11 @@
     </div>
     <nav>
       <button data-tab="chat" class="on">Chat</button>
+      <button data-tab="trade">Comprar/Vender</button>
+      <button data-tab="panel">Panel</button>
       <button data-tab="pos">Posiciones</button>
+      <button data-tab="lists">Listas</button>
+      <button data-tab="profits">Ganancias</button>
       <button data-tab="bots">Bots</button>
       <button data-tab="srv">Servidor</button>
     </nav>
@@ -155,6 +167,106 @@
       <div class="composer">
         <textarea id="msg" rows="1" placeholder="Habla normal: «vende la mitad de la que va ganando»"></textarea>
         <button class="send" id="send">↑</button>
+      </div>
+    </section>
+
+    <section id="tab-trade">
+      <div class="tile" id="hotWarn" style="display:none;border-color:var(--warn);background:#1d1508">
+        <b class="warn">Wallet caliente APAGADA.</b>
+        <div class="sub" style="white-space:normal">Para comprar/vender/enviar de verdad, pon
+          <span class="mono">PANEL_HOT_WALLET=true</span> en el .env del panel y reinícialo.</div>
+      </div>
+      <div class="tile">
+        <h2>Buscar token</h2>
+        <div style="display:flex;gap:8px">
+          <input class="field mono" id="tMint" placeholder="Pega el contrato (mint)" style="margin:0">
+          <button class="pill" id="tLookup">Ver</button>
+        </div>
+        <div id="tInfo" style="margin-top:12px"></div>
+      </div>
+      <div class="tile">
+        <h2>Comprar</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input class="field mono" id="buySol" inputmode="decimal" value="0.15"
+            style="margin:0;width:110px;text-align:center">
+          <span class="sub">SOL</span>
+          <div class="grow"></div>
+          <button class="pill" data-buy="0.05">0.05</button>
+          <button class="pill" data-buy="0.15">0.15</button>
+          <button class="pill" data-buy="0.25">0.25</button>
+          <button class="pill" data-buy="0.5">0.5</button>
+        </div>
+        <button class="btn" id="doBuy" style="margin-top:12px">Comprar ahora (firma real)</button>
+      </div>
+      <div class="tile">
+        <h2>Vender de la wallet</h2>
+        <div class="sub" style="margin-bottom:8px">Vende el % que tengas de ese token por SOL, vía Jupiter.</div>
+        <div style="display:flex;gap:8px">
+          <button class="pill grow" data-sell="25">25%</button>
+          <button class="pill grow" data-sell="50">50%</button>
+          <button class="pill grow" data-sell="100">100%</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-panel">
+      <div class="tile">
+        <h2>Total desde el inicio</h2>
+        <div class="stats" id="panelStats"></div>
+        <canvas id="cumChart" style="width:100%;height:150px;margin-top:12px"></canvas>
+      </div>
+      <div class="tile">
+        <h2>Por moneda</h2>
+        <canvas id="tokChart" style="width:100%;height:150px"></canvas>
+        <div id="tokList" style="margin-top:10px"></div>
+      </div>
+      <div class="tile">
+        <h2>Vender posiciones abiertas</h2>
+        <div id="panelPositions"><div class="empty">Cargando…</div></div>
+      </div>
+    </section>
+
+    <section id="tab-lists">
+      <div class="tile">
+        <h2>Listas de wallets del bot</h2>
+        <div id="listsBox"><button class="pill" id="loadLists">Cargar listas</button></div>
+      </div>
+      <div class="tile" id="listDetail" style="display:none">
+        <h2 id="listTitle">Lista</h2>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input class="field mono" id="newAddr" placeholder="Añadir wallet…" style="margin:0">
+          <button class="pill" id="addAddr">＋</button>
+        </div>
+        <div id="listWallets"></div>
+      </div>
+    </section>
+
+    <section id="tab-profits">
+      <div class="tile">
+        <h2>Reparto de ganancias</h2>
+        <div class="sub" style="white-space:normal;margin-bottom:10px">
+          Del beneficio, un % va a cada wallet. En <b>manual</b> repartes tú; en
+          <b>automático</b> el panel manda la parte nueva cada 5 min.</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="pill grow" id="modeManual">Manual</button>
+          <button class="pill grow" id="modeAuto">Automático</button>
+        </div>
+        <div id="recipients"></div>
+        <button class="pill" id="addRecipient" style="margin-top:8px">＋ Añadir wallet</button>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+          <span class="sub">Auto: repartir cuando el beneficio nuevo supere</span>
+          <input class="field mono" id="minAuto" inputmode="decimal" value="0.2"
+            style="margin:0;width:80px;text-align:center"><span class="sub">SOL</span>
+        </div>
+        <button class="btn" id="saveProfits" style="margin-top:12px">Guardar reparto</button>
+      </div>
+      <div class="tile">
+        <h2>Repartir ahora (manual)</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="field mono" id="distSol" inputmode="decimal" placeholder="SOL a repartir"
+            style="margin:0"><button class="pill" id="doDistribute">Repartir</button>
+        </div>
+        <div id="distResult" style="margin-top:10px"></div>
       </div>
     </section>
 
@@ -229,13 +341,23 @@ function show(which) {
 }
 
 /* ------------------------------- login ------------------------------- */
+let pinMode = false;
+$("#toggleMode").onclick = () => {
+  pinMode = !pinMode;
+  $("#pwBox").style.display = pinMode ? "none" : "block";
+  $("#pinBox").style.display = pinMode ? "block" : "none";
+  $("#toggleMode").textContent = pinMode ? "Entrar con contraseña" : "Entrar con PIN";
+  (pinMode ? $("#pin") : $("#u")).focus();
+};
+
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   $("#loginBtn").disabled = true;
   $("#loginErr").textContent = "";
+  const body = pinMode ? { pin: $("#pin").value } : { user: $("#u").value, password: $("#p").value };
   try {
-    await api("/api/login", { method: "POST", body: JSON.stringify({ user: $("#u").value, password: $("#p").value }) });
-    $("#p").value = "";
+    await api("/api/login", { method: "POST", body: JSON.stringify(body) });
+    $("#p").value = ""; $("#pin").value = "";
     show("app");
     refresh();
   } catch (err) {
@@ -252,6 +374,11 @@ document.querySelectorAll("nav button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
     document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === "tab-" + b.dataset.tab));
+    const tab = b.dataset.tab;
+    if (tab === "panel") loadPanel();
+    else if (tab === "lists") { if ($("#listsBox").querySelector(".row")) {} else loadLists(); }
+    else if (tab === "profits") loadProfits();
+    else if (tab === "trade") $("#hotWarn").style.display = (state && state.config && state.config.hot_wallet) ? "none" : "block";
   };
 });
 
@@ -477,6 +604,257 @@ box.addEventListener("keydown", e => {
 });
 $("#send").onclick = () => { const v = box.value; box.value = ""; box.style.height = "auto"; ask(v); };
 document.querySelectorAll(".hints button").forEach(b => { b.onclick = () => ask(b.textContent); });
+
+/* ---------------------------- comprar / vender ----------------------- */
+let currentToken = null;
+
+$("#tLookup").onclick = lookupToken;
+async function lookupToken() {
+  const mint = $("#tMint").value.trim();
+  if (!mint) return;
+  const box = $("#tInfo");
+  box.innerHTML = '<div class="empty">Consultando mercado…</div>';
+  try {
+    const { token: t } = await api("/api/token?mint=" + encodeURIComponent(mint));
+    currentToken = mint;
+    box.innerHTML = "";
+    if (!t.found) { box.appendChild(el("div", "empty warn", "Sin datos de mercado (¿aún en la curva de pump.fun o mint mal escrito?).")); }
+    else {
+      const stats = el("div", "stats");
+      for (const [label, value, k] of [
+        [t.symbol || "Token", "$" + n2(t.market_cap_usd), ""],
+        ["Liquidez", "$" + n2(t.liquidity_usd), ""],
+        ["Vol 5m", "$" + n2(t.volume_5m_usd), ""],
+        ["5m", signed(t.price_change_5m || 0), cls(t.price_change_5m || 0)],
+      ]) { const d = el("div", "stat"); d.appendChild(el("b", k, value)); d.appendChild(el("span", null, label)); stats.appendChild(d); }
+      box.appendChild(stats);
+      if (t.rug) {
+        const risky = t.rug.rugged || (t.rug.risk_level && /danger|high/i.test(t.rug.risk_level));
+        box.appendChild(el("div", "sub " + (risky ? "down" : "up"),
+          "RugCheck: " + (t.rug.risk_level || "?") + (t.rug.risks?.length ? " · " + t.rug.risks.join(", ") : "")));
+      }
+      const links = el("div", "sub"); links.style.marginTop = "6px";
+      links.innerHTML = `<a href="${t.links.dexscreener}" target="_blank" style="color:var(--accent)">DexScreener</a> · ` +
+        `<a href="${t.links.gmgn}" target="_blank" style="color:var(--accent)">GMGN</a> · ` +
+        `<a href="${t.links.solscan}" target="_blank" style="color:var(--accent)">Solscan</a>`;
+      box.appendChild(links);
+    }
+  } catch (err) { box.innerHTML = ""; box.appendChild(el("div", "empty warn", err.message)); }
+}
+
+document.querySelectorAll("[data-buy]").forEach(b => b.onclick = () => { $("#buySol").value = b.dataset.buy; });
+
+$("#doBuy").onclick = async () => {
+  const mint = ($("#tMint").value || currentToken || "").trim();
+  const solAmt = parseFloat($("#buySol").value);
+  if (!mint) return toast("Pega primero un contrato.", true);
+  if (!(solAmt > 0)) return toast("Cantidad de SOL inválida.", true);
+  if (!confirm(`COMPRAR ${solAmt} SOL de este token?\nEs una firma REAL e irreversible.`)) return;
+  $("#doBuy").disabled = true;
+  try {
+    const out = await api("/api/wallet/buy", { method: "POST", body: JSON.stringify({ mint, sol: solAmt }) });
+    toast("Compra enviada ✓");
+    $("#tInfo").appendChild(el("div", "sub up", "TX: " + out.signature));
+  } catch (err) { toast(err.message, true); } finally { $("#doBuy").disabled = false; }
+};
+
+document.querySelectorAll("[data-sell]").forEach(b => b.onclick = async () => {
+  const mint = ($("#tMint").value || currentToken || "").trim();
+  const pct = parseFloat(b.dataset.sell);
+  if (!mint) return toast("Pega primero un contrato.", true);
+  if (!confirm(`VENDER ${pct}% de este token por SOL?\nFirma REAL.`)) return;
+  try {
+    const out = await api("/api/wallet/sell", { method: "POST", body: JSON.stringify({ mint, percent: pct }) });
+    toast(`Venta enviada ✓ ~${sol(out.expected_sol)} SOL`);
+  } catch (err) { toast(err.message, true); }
+});
+
+/* -------------------------------- panel ------------------------------ */
+function miniChart(canvas, points, color) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 300, h = canvas.clientHeight || 150;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!points.length) { ctx.fillStyle = "#8b98ab"; ctx.font = "13px sans-serif"; ctx.fillText("Sin datos aún", 8, 20); return; }
+  const vals = points.map(p => p.v);
+  let min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  if (max === min) max = min + 1;
+  const pad = 6, x = i => pad + i * (w - 2 * pad) / Math.max(1, points.length - 1);
+  const y = v => h - pad - (v - min) / (max - min) * (h - 2 * pad);
+  // línea del cero
+  ctx.strokeStyle = "#232b37"; ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(w - pad, y(0)); ctx.stroke();
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p, i) => { const px = x(i), py = y(p.v); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.stroke();
+  ctx.fillStyle = color + "22"; ctx.lineTo(x(points.length - 1), y(0)); ctx.lineTo(x(0), y(0)); ctx.closePath(); ctx.fill();
+}
+
+function barsChart(canvas, items) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 300, h = canvas.clientHeight || 150;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!items.length) { ctx.fillStyle = "#8b98ab"; ctx.font = "13px sans-serif"; ctx.fillText("Sin datos aún", 8, 20); return; }
+  const vals = items.map(i => i.pnl_sol);
+  const max = Math.max(0.0001, ...vals.map(Math.abs));
+  const pad = 6, bw = (w - 2 * pad) / items.length, mid = h / 2;
+  items.forEach((it, i) => {
+    const bh = (it.pnl_sol / max) * (h / 2 - pad);
+    ctx.fillStyle = it.pnl_sol >= 0 ? "#25d07d" : "#ff5c5c";
+    ctx.fillRect(pad + i * bw + 1, bh >= 0 ? mid - bh : mid, Math.max(1, bw - 2), Math.abs(bh));
+  });
+}
+
+async function loadPanel() {
+  try {
+    const c = await api("/api/chart");
+    const st = $("#panelStats"); st.innerHTML = "";
+    for (const [label, value, k] of [
+      ["Total", sol(c.total_sol) + " SOL", cls(c.total_sol)],
+      ["Cerradas", String(c.per_token.length), ""],
+    ]) { const d = el("div", "stat"); d.appendChild(el("b", k, value)); d.appendChild(el("span", null, label)); st.appendChild(d); }
+    miniChart($("#cumChart"), c.cumulative.map(p => ({ v: p.cum_sol })), c.total_sol >= 0 ? "#25d07d" : "#ff5c5c");
+    const recent = c.per_token.slice(0, 30).reverse();
+    barsChart($("#tokChart"), recent);
+    const box = $("#tokList"); box.innerHTML = "";
+    for (const t of c.per_token.slice(0, 12)) {
+      const row = el("div", "row");
+      const info = el("div", "grow");
+      info.appendChild(el("div", "sym", t.symbol));
+      info.appendChild(el("div", "sub mono", (t.mint || "").slice(0, 20) + "…"));
+      row.appendChild(info);
+      row.appendChild(el("div", cls(t.pnl_sol), sol(t.pnl_sol) + " SOL"));
+      box.appendChild(row);
+    }
+    // posiciones abiertas con vender todo/x%
+    const pbox = $("#panelPositions"); pbox.innerHTML = "";
+    const positions = (state && state.positions && !state.positions.error) ? state.positions : [];
+    if (!positions.length) pbox.appendChild(el("div", "empty", "Ninguna posición abierta."));
+    for (const p of positions) {
+      const row = el("div", "row");
+      const info = el("div", "grow");
+      const head = el("div"); head.appendChild(el("span", "sym", p.symbol));
+      head.appendChild(el("span", cls(p.pnl_pct), "  " + signed(p.pnl_pct)));
+      info.appendChild(head); info.appendChild(el("div", "sub", `${p.bot} · ~${sol(p.value_sol)} SOL`));
+      row.appendChild(info);
+      for (const pct of [25, 50, 100]) { const b = el("button", "pill", pct + "%"); b.onclick = () => sell(p, pct); row.appendChild(b); }
+      pbox.appendChild(row);
+    }
+  } catch (err) { toast(err.message, true); }
+}
+
+/* -------------------------------- listas ----------------------------- */
+$("#loadLists").onclick = loadLists;
+async function loadLists() {
+  const box = $("#listsBox"); box.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const { lists: rows } = await api("/api/lists");
+    box.innerHTML = "";
+    for (const l of rows) {
+      const row = el("div", "row");
+      const info = el("div", "grow");
+      info.appendChild(el("div", "sym", l.file + (l.is_blacklist ? " ⛔" : "")));
+      info.appendChild(el("div", "sub", l.count + " wallets · " + (l.readme || "")));
+      row.appendChild(info);
+      const b = el("button", "pill", "Abrir"); b.onclick = () => openList(l.file); row.appendChild(b);
+      box.appendChild(row);
+    }
+  } catch (err) { box.innerHTML = ""; box.appendChild(el("div", "empty warn", err.message)); }
+}
+
+let currentList = null;
+async function openList(file) {
+  currentList = file;
+  $("#listDetail").style.display = "block";
+  $("#listTitle").textContent = file;
+  const box = $("#listWallets"); box.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const data = await api("/api/lists/" + encodeURIComponent(file));
+    box.innerHTML = "";
+    if (!data.wallets.length) box.appendChild(el("div", "empty", "Vacía."));
+    for (const w of data.wallets) {
+      const row = el("div", "row");
+      const info = el("div", "grow");
+      info.appendChild(el("div", "sub mono", w.wallet));
+      if (Object.keys(w.notes).length) info.appendChild(el("div", "sub", JSON.stringify(w.notes)));
+      row.appendChild(info);
+      const b = el("button", "pill", "✕"); b.style.color = "var(--down)";
+      b.onclick = async () => {
+        if (!confirm("Quitar esta wallet de " + file + "?")) return;
+        try { await api("/api/lists/remove", { method: "POST", body: JSON.stringify({ file, address: w.wallet }) }); openList(file); }
+        catch (e) { toast(e.message, true); }
+      };
+      row.appendChild(b);
+      box.appendChild(row);
+    }
+  } catch (err) { box.innerHTML = ""; box.appendChild(el("div", "empty warn", err.message)); }
+}
+
+$("#addAddr").onclick = async () => {
+  const address = $("#newAddr").value.trim();
+  if (!address || !currentList) return;
+  try {
+    await api("/api/lists/add", { method: "POST", body: JSON.stringify({ file: currentList, address }) });
+    $("#newAddr").value = ""; openList(currentList); toast("Añadida ✓");
+  } catch (err) { toast(err.message, true); }
+};
+
+/* ------------------------------- ganancias --------------------------- */
+let profitCfg = { mode: "manual", recipients: [], min_auto_sol: 0.2 };
+
+function renderRecipients() {
+  const box = $("#recipients"); box.innerHTML = "";
+  profitCfg.recipients.forEach((r, i) => {
+    const row = el("div", "row");
+    const addr = el("input", "field mono"); addr.value = r.address || ""; addr.placeholder = "wallet";
+    addr.style.margin = "0"; addr.oninput = () => r.address = addr.value.trim();
+    const pct = el("input", "field mono"); pct.value = r.pct || ""; pct.placeholder = "%";
+    pct.inputMode = "decimal"; pct.style = "margin:0;width:64px;text-align:center";
+    pct.oninput = () => r.pct = parseFloat(pct.value) || 0;
+    const del = el("button", "pill", "✕"); del.style.color = "var(--down)";
+    del.onclick = () => { profitCfg.recipients.splice(i, 1); renderRecipients(); };
+    row.appendChild(addr); row.appendChild(pct); row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+function paintMode() {
+  $("#modeManual").style.color = profitCfg.mode === "manual" ? "var(--accent)" : "var(--dim)";
+  $("#modeAuto").style.color = profitCfg.mode === "auto" ? "var(--accent)" : "var(--dim)";
+}
+$("#modeManual").onclick = () => { profitCfg.mode = "manual"; paintMode(); };
+$("#modeAuto").onclick = () => { profitCfg.mode = "auto"; paintMode(); };
+$("#addRecipient").onclick = () => { profitCfg.recipients.push({ label: "", address: "", pct: 10 }); renderRecipients(); };
+
+async function loadProfits() {
+  try {
+    const { config: c } = await api("/api/profits");
+    profitCfg = { mode: c.mode, recipients: c.recipients || [], min_auto_sol: c.min_auto_sol };
+    $("#minAuto").value = c.min_auto_sol;
+    renderRecipients(); paintMode();
+  } catch (err) { toast(err.message, true); }
+}
+$("#saveProfits").onclick = async () => {
+  try {
+    await api("/api/profits/set", { method: "POST", body: JSON.stringify({
+      mode: profitCfg.mode, recipients: profitCfg.recipients, min_auto_sol: parseFloat($("#minAuto").value) || 0 }) });
+    toast("Reparto guardado ✓" + (profitCfg.mode === "auto" ? " (automático activo)" : ""));
+  } catch (err) { toast(err.message, true); }
+};
+$("#doDistribute").onclick = async () => {
+  const total = parseFloat($("#distSol").value);
+  if (!(total > 0)) return toast("Cantidad inválida.", true);
+  if (!confirm(`Repartir ${total} SOL entre las wallets configuradas?\nFirma REAL.`)) return;
+  const box = $("#distResult"); box.innerHTML = '<div class="empty">Enviando…</div>';
+  try {
+    const out = await api("/api/profits/distribute", { method: "POST", body: JSON.stringify({ total_sol: total }) });
+    box.innerHTML = "";
+    box.appendChild(el("div", "sub up", `Repartido ${sol(out.distributed_sol)} SOL en ${out.sent.length} envíos.`));
+    for (const s of out.sent) box.appendChild(el("div", "sub mono", `${sol(s.sol)} → ${s.address.slice(0, 12)}… ✓`));
+    for (const e of out.errors) box.appendChild(el("div", "sub down", `${e.address.slice(0, 12)}…: ${e.error}`));
+  } catch (err) { box.innerHTML = ""; box.appendChild(el("div", "empty warn", err.message)); }
+};
 
 /* ------------------------------- refresh ----------------------------- */
 async function refresh() {

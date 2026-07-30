@@ -27,6 +27,10 @@ y hablar con systemd sin abrir un canal remoto extra.
 | **Wallet** | Saldo real on-chain + tokens que aún tiene, valorados en USD (Jupiter) |
 | **Bots** | Los 19 configs: activar/desactivar, ver estrategia, leer el YAML |
 | **Servidor** | Carga, disco, procesos del bot vivos, estado de los servicios, logs |
+| **Comprar/Vender** | Busca un token (precio, MC, liquidez, rug) y compra/vende con la wallet **⚠ firma real** |
+| **Panel** | Gráfico del P&L total desde el inicio + por moneda, y vender lo abierto |
+| **Listas** | Editar las listas de devs/traders/blacklist que el bot copia |
+| **Ganancias** | Repartir el beneficio por % a varias wallets, manual o automático **⚠ firma real** |
 | **Chat** | «¿cómo voy hoy?», «vende la mitad de la que va ganando», «¿está corriendo todo?» |
 
 ---
@@ -47,8 +51,18 @@ canal en vez de inventarse otro:
 Es exactamente el mismo camino que usa `tg_panel.py` en producción, así que una
 venta desde el panel toma la ruta que ya sabes que funciona.
 
-**El panel nunca importa el código del bot ni firma transacciones.** De la clave
-privada solo deriva la dirección pública, para poder leer el wallet.
+**El panel nunca importa el código del bot.** Para leer el wallet solo deriva la
+dirección pública de la clave.
+
+> ⚠ **Wallet caliente (opcional, apagada por defecto).** Si pones
+> `PANEL_HOT_WALLET=true`, el panel **sí firma transacciones reales**: compra y
+> vende tokens (vía Jupiter) y envía SOL a otras wallets para repartir
+> ganancias. Eso convierte el panel en una wallet caliente: quien comprometa el
+> panel puede mover los fondos. Con la variable en `false` (por defecto) todas
+> las rutas de firma están muertas y el panel es solo-lectura como antes.
+> Defensas cuando la enciendes: tope `PANEL_MAX_BUY_SOL` por compra, el mismo
+> secreto que el bot (una sola copia), y todo lo que propone el chat pasa por
+> Confirmar.
 
 ---
 
@@ -84,7 +98,9 @@ Además:
   fijadas en `PANEL_ALLOWED_UNITS`).
 - Los nombres de bot se validan contra `[A-Za-z0-9._-]`, así que ni el modelo ni
   una petición trucada pueden salirse del repo con `../`.
-- **No hay retirada de fondos.** El panel no tiene ese código.
+- **Envío de fondos:** solo existe con `PANEL_HOT_WALLET=true`, y ahí sirve para
+  el reparto de ganancias (enviar SOL a wallets que tú configuras). Con la
+  wallet caliente apagada, ese código no se puede ejecutar.
 
 Y por parte del acceso: contraseña con PBKDF2-SHA256 (240k rondas), cookie de
 sesión firmada con HMAC, bloqueo progresivo por IP tras fallos de login, y
@@ -111,11 +127,27 @@ El instalador crea el venv, genera `.env` con un `PANEL_SESSION_SECRET`
 aleatorio e instala el servicio systemd. Falta poner la contraseña:
 
 ```bash
-./.venv/bin/python -m server.hashpw     # imprime PANEL_PASSWORD_HASH=...
-nano .env                               # pega el hash y pon PANEL_USER
+./.venv/bin/python -m server.hashpw          # imprime PANEL_PASSWORD_HASH=...
+./.venv/bin/python -m server.hashpw --pin     # imprime PANEL_PIN_HASH=... (móvil)
+nano .env                                     # pega los hashes y pon PANEL_USER
 systemctl start sniper-deck
 systemctl status sniper-deck --no-pager
 ```
+
+### Encender la wallet caliente (para comprar/vender/enviar)
+
+Por defecto el panel es solo-lectura. Para operar de verdad desde la web:
+
+```bash
+nano .env
+# PANEL_HOT_WALLET=true          <- enciende la firma
+# PANEL_MAX_BUY_SOL=1.0          <- tope por compra, por seguridad
+systemctl restart sniper-deck
+```
+
+Firma con la misma clave del bot (`SOLANA_PRIVATE_KEY` de su `.env`). **Prueba
+siempre con una compra minúscula primero** (p.ej. 0.02 SOL) para confirmar que
+el RPC y la firma van antes de mover cantidades serias.
 
 ### Publicarlo
 

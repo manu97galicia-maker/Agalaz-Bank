@@ -255,6 +255,36 @@ def recent_trades(limit: int = 25) -> list[dict[str, Any]]:
     return _positions_from_trades()["closed"][: max(1, min(limit, 200))]
 
 
+def pnl_timeline() -> dict[str, Any]:
+    """Datos para los gráficos del panel.
+
+    ``cumulative`` es el P&L realizado acumulado tras cada token cerrado, en
+    orden cronológico -- la curva "total desde que empezaste". ``per_token`` es
+    el P&L de cada moneda, del más reciente al más antiguo, para las barras.
+    """
+    closed = sorted(
+        _positions_from_trades()["closed"], key=lambda r: r.get("last_ts") or ""
+    )
+    running = 0.0
+    cumulative: list[dict[str, Any]] = []
+    for row in closed:
+        running += row["pnl_sol"]
+        cumulative.append(
+            {"ts": row.get("last_ts"), "symbol": row["symbol"], "cum_sol": round(running, 6)}
+        )
+    per_token = [
+        {
+            "symbol": r["symbol"],
+            "mint": r["mint"],
+            "pnl_sol": r["pnl_sol"],
+            "pnl_pct": r["pnl_pct"],
+            "ts": r.get("last_ts"),
+        }
+        for r in reversed(closed)
+    ]
+    return {"cumulative": cumulative, "per_token": per_token, "total_sol": round(running, 6)}
+
+
 # --------------------------------------------------------------------------- #
 # Bot configs                                                                 #
 # --------------------------------------------------------------------------- #

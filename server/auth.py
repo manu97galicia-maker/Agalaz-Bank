@@ -68,6 +68,7 @@ class Auth:
     user: str
     password_hash: str
     secret: bytes
+    pin_hash: str = ""
     warnings: list[str] = field(default_factory=list)
     _attempts: dict[str, _Attempts] = field(default_factory=dict)
 
@@ -80,6 +81,13 @@ class Auth:
             warnings.append(
                 "PANEL_PASSWORD esta en texto plano en .env. Genera un hash con "
                 "`python -m server.hashpw` y usa PANEL_PASSWORD_HASH."
+            )
+        pin_hash = config.PANEL_PIN_HASH.strip()
+        if not pin_hash and config.PANEL_PIN:
+            pin_hash = hash_password(config.PANEL_PIN)
+            warnings.append(
+                "PANEL_PIN esta en texto plano en .env. Genera un hash con "
+                "`python -m server.hashpw --pin` y usa PANEL_PIN_HASH."
             )
         secret_raw = config.SESSION_SECRET.strip()
         if not secret_raw:
@@ -98,6 +106,7 @@ class Auth:
             user=config.PANEL_USER,
             password_hash=password_hash,
             secret=secret_raw.encode(),
+            pin_hash=pin_hash,
             warnings=warnings,
         )
 
@@ -105,7 +114,7 @@ class Auth:
 
     @property
     def configured(self) -> bool:
-        return bool(self.user and self.password_hash)
+        return bool((self.user and self.password_hash) or self.pin_hash)
 
     def _lockout_remaining(self, ip: str) -> int:
         entry = self._attempts.get(ip)
@@ -122,18 +131,33 @@ class Auth:
             return False, "El panel no tiene credenciales configuradas."
 
         ok_user = hmac.compare_digest(user or "", self.user)
-        ok_password = verify_password(password or "", self.password_hash)
+        ok_password = self.password_hash and verify_password(password or "", self.password_hash)
         if ok_user and ok_password:
             self._attempts.pop(ip, None)
             return True, ""
+        return self._fail(ip, "Usuario o contrasena incorrectos.")
 
+    def check_pin(self, ip: str, pin: str) -> tuple[bool, str]:
+        """Validate a short PIN login. Same lockout schedule as the password."""
+        remaining = self._lockout_remaining(ip)
+        if remaining:
+            return False, f"Demasiados intentos. Espera {remaining}s."
+        if not self.pin_hash:
+            return False, "No hay PIN configurado."
+        if verify_password(pin or "", self.pin_hash):
+            self._attempts.pop(ip, None)
+            return True, ""
+        return self._fail(ip, "PIN incorrecto.")
+
+    def _fail(self, ip: str, message: str) -> tuple[bool, str]:
+        """Record a failed attempt and apply the progressive lockout."""
         entry = self._attempts.setdefault(ip, _Attempts())
         entry.failures += 1
         for threshold, seconds in reversed(_LOCKOUT_STEPS):
             if entry.failures >= threshold:
                 entry.blocked_until = time.time() + seconds
                 break
-        return False, "Usuario o contrasena incorrectos."
+        return False, message
 
     # -- sessions ----------------------------------------------------------- #
 

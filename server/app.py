@@ -8,6 +8,7 @@ phone over the internet, so the same rules apply to every caller.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -16,7 +17,7 @@ from typing import Any
 
 from aiohttp import web
 
-from . import agent, auth, botlink, chain, config, ops
+from . import agent, auth, botlink, chain, config, lists, market, ops, profits, wallet
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,16 @@ async def error_middleware(
     """Turn the domain errors into clean 4xx JSON instead of a 500 + traceback."""
     try:
         return await handler(request)
-    except (botlink.BotLinkError, chain.ChainError, ops.OpsError, agent.AgentError) as exc:
+    except (
+        botlink.BotLinkError,
+        chain.ChainError,
+        ops.OpsError,
+        agent.AgentError,
+        wallet.WalletError,
+        market.MarketError,
+        lists.ListError,
+        profits.ProfitError,
+    ) as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=400)
     except web.HTTPException:
         raise
@@ -98,9 +108,14 @@ async def handle_ping(request: web.Request) -> web.Response:
 
 async def handle_login(request: web.Request) -> web.Response:
     body = await request.json()
-    ok, message = request.app["auth"].check(
-        _client_ip(request), str(body.get("user", "")), str(body.get("password", ""))
-    )
+    auth_obj = request.app["auth"]
+    ip = _client_ip(request)
+    # Dos puertas: contraseña larga (user+password) o PIN corto desde el móvil.
+    pin = str(body.get("pin", "")).strip()
+    if pin:
+        ok, message = auth_obj.check_pin(ip, pin)
+    else:
+        ok, message = auth_obj.check(ip, str(body.get("user", "")), str(body.get("password", "")))
     if not ok:
         logger.warning("Login fallido desde %s", _client_ip(request))
         return web.json_response({"ok": False, "error": message}, status=401)
@@ -220,6 +235,118 @@ async def handle_toggle_bot(request: web.Request) -> web.Response:
 
 
 # --------------------------------------------------------------------------- #
+# Mercado (lectura)                                                            #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_token(request: web.Request) -> web.Response:
+    mint = request.query.get("mint", "")
+    return web.json_response({"ok": True, "token": await market.token_info(mint)})
+
+
+async def handle_chart(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **botlink.pnl_timeline()})
+
+
+# --------------------------------------------------------------------------- #
+# Wallet caliente (FIRMA — botones directos, con la posición en pantalla)      #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_buy(request: web.Request) -> web.Response:
+    body = await request.json()
+    result = await wallet.buy(
+        str(body["mint"]).strip(),
+        float(body["sol"]),
+        int(body["slippage_bps"]) if body.get("slippage_bps") else None,
+    )
+    logger.warning("COMPRA firmada desde el panel: %s", result.get("signature"))
+    return web.json_response({"ok": True, **result})
+
+
+async def handle_sell_signed(request: web.Request) -> web.Response:
+    body = await request.json()
+    result = await wallet.sell(
+        str(body["mint"]).strip(),
+        float(body["percent"]),
+        int(body["slippage_bps"]) if body.get("slippage_bps") else None,
+    )
+    logger.warning("VENTA firmada desde el panel: %s", result.get("signature"))
+    return web.json_response({"ok": True, **result})
+
+
+async def handle_send_sol(request: web.Request) -> web.Response:
+    body = await request.json()
+    result = await wallet.send_sol(str(body["to"]).strip(), float(body["sol"]))
+    logger.warning("ENVIO de SOL firmado desde el panel: %s", result.get("signature"))
+    return web.json_response({"ok": True, **result})
+
+
+# --------------------------------------------------------------------------- #
+# Listas de wallets (devs / traders / blacklist)                               #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_lists(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "lists": lists.list_files()})
+
+
+async def handle_list_read(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **lists.read_list(request.match_info["file"])})
+
+
+async def handle_list_add(request: web.Request) -> web.Response:
+    body = await request.json()
+    return web.json_response(
+        {"ok": True, **lists.add_wallet(str(body["file"]), str(body["address"]), str(body.get("note", "")))}
+    )
+
+
+async def handle_list_remove(request: web.Request) -> web.Response:
+    body = await request.json()
+    return web.json_response(
+        {"ok": True, **lists.remove_wallet(str(body["file"]), str(body["address"]))}
+    )
+
+
+async def handle_list_create(request: web.Request) -> web.Response:
+    body = await request.json()
+    return web.json_response(
+        {"ok": True, **lists.create_list(str(body["file"]), str(body.get("readme", "")))}
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Reparto de ganancias                                                        #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_profits_get(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "config": profits.get_config()})
+
+
+async def handle_profits_set(request: web.Request) -> web.Response:
+    body = await request.json()
+    return web.json_response(
+        {
+            "ok": True,
+            "config": profits.set_config(
+                str(body.get("mode", "manual")),
+                list(body.get("recipients", [])),
+                float(body.get("min_auto_sol", 0.2)),
+            ),
+        }
+    )
+
+
+async def handle_profits_distribute(request: web.Request) -> web.Response:
+    body = await request.json()
+    result = await profits.distribute(float(body["total_sol"]))
+    logger.warning("Reparto de ganancias ejecutado: %s SOL", result.get("distributed_sol"))
+    return web.json_response({"ok": True, **result})
+
+
+# --------------------------------------------------------------------------- #
 # Agent routes                                                                #
 # --------------------------------------------------------------------------- #
 
@@ -292,12 +419,73 @@ def create_app() -> web.Application:
     app.router.add_post("/api/sell", handle_sell)
     app.router.add_post("/api/bots/toggle", handle_toggle_bot)
 
+    # Mercado + gráficos (lectura)
+    app.router.add_get("/api/token", handle_token)
+    app.router.add_get("/api/chart", handle_chart)
+
+    # Wallet caliente (firma)
+    app.router.add_post("/api/wallet/buy", handle_buy)
+    app.router.add_post("/api/wallet/sell", handle_sell_signed)
+    app.router.add_post("/api/wallet/send", handle_send_sol)
+
+    # Listas de wallets
+    app.router.add_get("/api/lists", handle_lists)
+    app.router.add_get("/api/lists/{file}", handle_list_read)
+    app.router.add_post("/api/lists/add", handle_list_add)
+    app.router.add_post("/api/lists/remove", handle_list_remove)
+    app.router.add_post("/api/lists/create", handle_list_create)
+
+    # Reparto de ganancias
+    app.router.add_get("/api/profits", handle_profits_get)
+    app.router.add_post("/api/profits/set", handle_profits_set)
+    app.router.add_post("/api/profits/distribute", handle_profits_distribute)
+
     app.router.add_post("/api/agent/chat", handle_chat)
     app.router.add_get("/api/agent/pending", handle_pending)
     app.router.add_post("/api/agent/confirm", handle_confirm)
     app.router.add_post("/api/agent/cancel", handle_cancel)
     app.router.add_post("/api/agent/reset", handle_reset_chat)
+
+    app.on_startup.append(_start_background)
+    app.on_cleanup.append(_stop_background)
     return app
+
+
+# --------------------------------------------------------------------------- #
+# Reparto automático de ganancias (bucle de fondo)                            #
+# --------------------------------------------------------------------------- #
+
+_AUTO_INTERVAL = 300  # cada 5 minutos
+
+
+async def _auto_profit_loop() -> None:
+    """Si el reparto está en modo 'auto', manda periódicamente el beneficio nuevo.
+
+    Sólo actúa con la wallet caliente encendida y destinatarios configurados;
+    en cualquier otro caso es un no-op silencioso.
+    """
+    while True:
+        try:
+            await asyncio.sleep(_AUTO_INTERVAL)
+            result = await profits.auto_tick()
+            if result:
+                logger.warning("Reparto AUTO: %s SOL", result.get("distributed_sol"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- un fallo no debe matar el bucle
+            logger.exception("Fallo en el bucle de reparto automático")
+
+
+async def _start_background(app: web.Application) -> None:
+    app["auto_profit_task"] = asyncio.create_task(_auto_profit_loop())
+
+
+async def _stop_background(app: web.Application) -> None:
+    task = app.get("auto_profit_task")
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 def main() -> None:

@@ -4,6 +4,9 @@
 *.key
 *.pem
 
+# Estado del panel (config de reparto de ganancias, etc.)
+state/
+
 __pycache__/
 *.py[cod]
 .venv/

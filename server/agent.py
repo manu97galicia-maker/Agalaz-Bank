@@ -26,7 +26,7 @@ from typing import Any
 
 import anthropic
 
-from . import botlink, chain, config, ops
+from . import botlink, chain, config, lists, market, ops, profits, wallet
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,11 @@ Contexto del sistema:
   auditoría on-chain. La foto real del wallet viene de la herramienta de cadena.
 - Cambiar un YAML NO afecta a un bot que ya está corriendo: hay que reiniciarlo.
   Dilo siempre que propongas un cambio de config.
+- La wallet es CALIENTE: puedes proponer comprar, vender y enviar SOL de verdad
+  (firma real, vía Jupiter). Antes de proponer una compra, mira el token con
+  get_token_info y di en una frase si tiene sentido (liquidez, rug, market cap).
+- Las listas top_devs_*.json y blacklist_devs.json deciden a quién copia el bot;
+  añadir o quitar una wallet cambia lo que compra. Trátalo con cuidado.
 
 Cómo trabajas:
 - Usa las herramientas de lectura libremente antes de responder. No inventes
@@ -218,6 +223,39 @@ READ_TOOLS: list[dict[str, Any]] = [
             "required": ["unit"],
         },
     },
+    {
+        "name": "get_token_info",
+        "description": (
+            "Datos de mercado de un token por su mint: precio, market cap, "
+            "liquidez, volumen (24h y 5m), cambios de precio y veredicto de rug "
+            "(RugCheck), más enlaces a DexScreener/GMGN/Solscan. Úsala cuando "
+            "pregunte por una moneda concreta o antes de proponer comprarla."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"mint": {"type": "string", "description": "Dirección del token"}},
+            "required": ["mint"],
+        },
+    },
+    {
+        "name": "list_wallet_lists",
+        "description": "Todas las listas de wallets del bot (devs, traders, blacklist) con su recuento.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_wallet_list",
+        "description": "Direcciones de una lista concreta (p.ej. top_devs_final.json).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"file": {"type": "string"}},
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "get_profits_config",
+        "description": "Config actual del reparto de ganancias: modo, destinatarios y %.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 WRITE_TOOLS: list[dict[str, Any]] = [
@@ -272,6 +310,80 @@ WRITE_TOOLS: list[dict[str, Any]] = [
                 "value": {"type": "number"},
             },
             "required": ["name", "field", "value"],
+        },
+    },
+    {
+        "name": "propose_buy",
+        "description": (
+            "Prepara una COMPRA real de un token con la wallet caliente: gasta "
+            "SOL vía Jupiter. NO compra: deja la propuesta para que Manu confirme "
+            "viendo el mint y el importe. Usa get_token_info antes para no comprar "
+            "a ciegas. Hay un tope de seguridad de SOL por compra."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string"},
+                "sol": {"type": "number", "description": "SOL a gastar"},
+            },
+            "required": ["mint", "sol"],
+        },
+    },
+    {
+        "name": "propose_sell_token",
+        "description": (
+            "Prepara la VENTA real por SOL de un % de lo que la wallet tenga de un "
+            "token (por mint), vía Jupiter. Distinto de propose_sell, que le pide "
+            "al bot vender su posición; este vende directo desde la wallet. No "
+            "ejecuta nada."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string"},
+                "percent": {"type": "number", "description": "1-100 del saldo de ese token"},
+            },
+            "required": ["mint", "percent"],
+        },
+    },
+    {
+        "name": "propose_send_sol",
+        "description": (
+            "Prepara un ENVÍO de SOL a otra wallet. No ejecuta nada; Manu confirma "
+            "viendo destino e importe."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Dirección de destino"},
+                "sol": {"type": "number"},
+            },
+            "required": ["to", "sol"],
+        },
+    },
+    {
+        "name": "propose_add_wallet",
+        "description": (
+            "Prepara añadir una wallet a una lista del bot (top_devs_*.json o "
+            "blacklist_devs.json). Cambia a quién compra el bot. No ejecuta nada."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Fichero de lista"},
+                "address": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            "required": ["file", "address"],
+        },
+    },
+    {
+        "name": "propose_remove_wallet",
+        "description": "Prepara quitar una wallet de una lista del bot. No ejecuta nada.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"file": {"type": "string"}, "address": {"type": "string"}},
+            "required": ["file", "address"],
         },
     },
     {
@@ -344,6 +456,14 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
         return await ops.health()
     if name == "service_journal":
         return await ops.journal(args["unit"], int(args.get("lines", 60)))
+    if name == "get_token_info":
+        return await market.token_info(str(args["mint"]))
+    if name == "list_wallet_lists":
+        return lists.list_files()
+    if name == "read_wallet_list":
+        return lists.read_list(str(args["file"]))
+    if name == "get_profits_config":
+        return profits.get_config()
 
     if name == "propose_sell":
         suffix = str(args["suffix"])
@@ -394,6 +514,62 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
             f"{bot_name}: {field} {current!r} -> {value!r} (requiere reinicio)",
             "medium",
             lambda: _as_async(botlink.set_trade_field, bot_name, field, value),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_buy":
+        mint = str(args["mint"]).strip()
+        sol = float(args["sol"])
+        record = _queue(
+            "buy",
+            f"COMPRAR {sol:g} SOL de {mint[:8]}… (firma real, vía Jupiter)",
+            "high",
+            lambda: wallet.buy(mint, sol),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente. No se ha comprado nada."}
+
+    if name == "propose_sell_token":
+        mint = str(args["mint"]).strip()
+        percent = float(args["percent"])
+        record = _queue(
+            "sell_token",
+            f"VENDER {percent:g}% del saldo de {mint[:8]}… por SOL (firma real)",
+            "high",
+            lambda: wallet.sell(mint, percent),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente. No se ha vendido nada."}
+
+    if name == "propose_send_sol":
+        to = str(args["to"]).strip()
+        sol = float(args["sol"])
+        record = _queue(
+            "send_sol",
+            f"ENVIAR {sol:g} SOL a {to[:8]}… (firma real, irreversible)",
+            "high",
+            lambda: wallet.send_sol(to, sol),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente. No se ha enviado nada."}
+
+    if name == "propose_add_wallet":
+        file = str(args["file"]).strip()
+        address = str(args["address"]).strip()
+        note = str(args.get("note", ""))
+        record = _queue(
+            "list_add",
+            f"Añadir {address[:8]}… a {file} (cambia a quién compra el bot)",
+            "medium",
+            lambda: _as_async(lists.add_wallet, file, address, note),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "propose_remove_wallet":
+        file = str(args["file"]).strip()
+        address = str(args["address"]).strip()
+        record = _queue(
+            "list_remove",
+            f"Quitar {address[:8]}… de {file}",
+            "medium",
+            lambda: _as_async(lists.remove_wallet, file, address),
         )
         return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
 
@@ -593,7 +769,17 @@ async def chat(history: list[dict[str, Any]], message: str) -> dict[str, Any]:
                 output = await _execute_tool(block.name, dict(block.input or {}))
                 content = json.dumps(output, ensure_ascii=False, default=str)[:24000]
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
-            except (botlink.BotLinkError, chain.ChainError, ops.OpsError, ValueError, KeyError) as exc:
+            except (
+                botlink.BotLinkError,
+                chain.ChainError,
+                ops.OpsError,
+                wallet.WalletError,
+                market.MarketError,
+                lists.ListError,
+                profits.ProfitError,
+                ValueError,
+                KeyError,
+            ) as exc:
                 results.append(
                     {
                         "type": "tool_result",
