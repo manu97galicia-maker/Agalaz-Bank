@@ -59,21 +59,75 @@ HTTPS con Vercel y Vercel reenvía al droplet. Entra con el **PIN 1357**.
 
 ---
 
-## Paso 3 (recomendado antes de operar con dinero) — dominio + HTTPS real
+## Paso 3 (OBLIGATORIO antes de operar con dinero) — cerrar el droplet
 
-Con un dominio propio evitas el HTTP plano y el panel deja de estar desnudo en
-la IP:
+Sin este paso el montaje tiene dos agujeros de verdad:
+
+1. El tramo Vercel→droplet va en **texto plano**: tu contraseña viaja sin cifrar.
+2. El **puerto 8080 está abierto a todo internet**: cualquiera puede escanear la
+   IP y llamar a la API directamente, saltándose Vercel.
+
+Una contraseña más larga no arregla ninguno de los dos. Hay que cifrar el tramo
+y cerrar el puerto.
+
+### Hace falta un nombre, no una IP
+
+Let's Encrypt no firma certificados para una IP pelada, así que el droplet
+necesita un hostname. **Tú no lo vas a usar**: sigues abriendo la URL de Vercel.
+Es solo el extremo cifrado.
+
+- **Lo fiable:** un subdominio tuyo, p.ej. `api-banco.agalaz.com`, con un
+  registro **A → 159.89.19.12**.
+- **Sin tocar DNS:** `159-89-19-12.sslip.io` resuelve solo a esa IP. Depende de
+  un servicio de terceros y esos dominios compartidos a veces chocan con los
+  límites de emisión de Let's Encrypt; si falla, usa la opción de arriba.
+
+### Ejecutar
 
 ```bash
-apt install -y caddy
-cp deploy/Caddyfile /etc/caddy/Caddyfile
-nano /etc/caddy/Caddyfile     # pon panel.TUDOMINIO.com y su DNS -> 159.89.19.12
-systemctl reload caddy
+cd /root/sniper-deck && git pull
+API_HOST=api-banco.tudominio.com bash deploy/harden.sh
 ```
 
-Luego, o bien:
-- usas directamente `https://panel.tudominio.com` en el móvil (sin Vercel), o
-- cambias el `destination` del `vercel.json` a `https://panel.tudominio.com/$1`
-  y vuelves a `PANEL_HOST=127.0.0.1` + cierras el puerto 8080.
+El script comprueba que el DNS apunta aquí, instala Caddy, saca el certificado,
+pone el panel a escuchar solo en `127.0.0.1`, cierra el 8080 en el cortafuegos y
+verifica las dos cosas al final.
 
-Con eso ya es seguro poner `PANEL_HOT_WALLET=true` y operar.
+### Y apuntar Vercel al extremo cifrado
+
+En `vercel.json`:
+
+```json
+{ "source": "/api/(.*)", "destination": "https://api-banco.tudominio.com/api/$1" }
+```
+
+`git push` y Vercel redespliega solo. Los `rewrites` son un **proxy de servidor**,
+así que el navegador sigue viendo un único origen y la cookie de sesión no se
+rompe.
+
+Con esto sí es seguro poner `PANEL_HOT_WALLET=true`.
+
+---
+
+## Qué queda protegiendo el panel (y qué no)
+
+Después del paso 3:
+
+| Capa | Estado |
+|---|---|
+| Cifrado de punta a punta | ✅ navegador→Vercel→droplet, todo HTTPS |
+| Puerto 8080 desde internet | ✅ cerrado |
+| Contraseña | ✅ PBKDF2-SHA256, 240k rondas |
+| PIN corto | ✅ hash aparte |
+| Face ID / WebAuthn | ✅ |
+| Bloqueo por intentos | ✅ creciente, hasta 6 h |
+| Firma de transacciones | ✅ apagada salvo `PANEL_HOT_WALLET=true` |
+
+Lo que **no** desaparece: la URL de la API sigue siendo pública (es el precio de
+tener una web pública que abres desde el móvil). Lo que la protege es la
+cerradura, no el escondite. Por eso importa que la contraseña sea buena y que el
+bloqueo por intentos esté activo.
+
+Si algún día quieres que *ni siquiera se pueda llamar a la puerta*, el camino es
+Tailscale: el panel deja de estar en internet y solo lo ven tus dispositivos.
+Pierdes la web pública y el poder compartirla con Ricardo sin meterlo en la VPN.

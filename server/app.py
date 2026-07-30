@@ -64,9 +64,21 @@ def _session(request: web.Request) -> dict[str, Any]:
 
 
 def _client_ip(request: web.Request) -> str:
+    """Identidad de origen para el bloqueo por intentos fallidos.
+
+    Se coge el ULTIMO valor de ``X-Forwarded-For``, no el primero. El primero lo
+    pone el cliente y por tanto se puede falsificar: bastaria con mandar una IP
+    distinta en cada intento para saltarse el bloqueo por completo. El ultimo lo
+    añade nuestro propio Caddy con la direccion real del que llama, y eso no se
+    puede tocar desde fuera.
+
+    Detras del proxy de Vercel esto identifica a Vercel, no al navegador, asi que
+    el bloqueo pasa a ser global en vez de por visitante. Es el precio de tener
+    una web publica delante, y sigue frenando la fuerza bruta.
+    """
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.remote or "?"
 
 
