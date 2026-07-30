@@ -51,6 +51,37 @@ def seed_if_empty() -> None:
     _save(users)
 
 
+def sync_from_env() -> list[str]:
+    """(Re)crea los usuarios por defecto con ``PANEL_SEED_PASSWORD``.
+
+    A diferencia de :func:`seed_if_empty`, esto **pisa** la contraseña aunque ya
+    existan usuarios, para que el despliegue sea idempotente: se puede volver a
+    lanzar sin dejar el droplet con una contraseña vieja que nadie recuerda. Sin
+    interacción, así que sirve dentro de un script; la contraseña sale de la
+    variable de entorno y nunca de la línea de comandos (que quedaría en el
+    historial del shell).
+
+    Devuelve los nombres afectados. Lista vacía si no hay contraseña definida.
+    """
+    if not config.SEED_PASSWORD:
+        return []
+    pw_hash = hash_password(config.SEED_PASSWORD)
+    users = _load_raw()
+    by_name = {u.get("user", "").lower(): u for u in users}
+    touched: list[str] = []
+    for name, role in config.DEFAULT_ROLES.items():
+        display = name.capitalize()
+        existing = by_name.get(display.lower())
+        if existing:
+            existing["password_hash"] = pw_hash
+            existing.setdefault("role", role)
+        else:
+            users.append({"user": display, "role": role, "password_hash": pw_hash})
+        touched.append(display)
+    _save(users)
+    return touched
+
+
 def list_users() -> list[dict[str, Any]]:
     """Usuarios sin el hash (para pintar en la UI)."""
     return [{"user": u["user"], "role": u.get("role", "")} for u in _load_raw()]
@@ -107,6 +138,19 @@ def _cli() -> int:
         if not list_users():
             print("  (sin usuarios)")
         return 0
+    if args[0] == "sync":
+        touched = sync_from_env()
+        if not touched:
+            print(
+                "PANEL_SEED_PASSWORD no esta definido en el .env: no hay contrasena "
+                "con la que crear los usuarios.",
+                file=sys.stderr,
+            )
+            return 1
+        print("Usuarios listos con la contrasena de PANEL_SEED_PASSWORD:")
+        for u in list_users():
+            print(f"  {u['user']:<12} — {u['role']}")
+        return 0
     if args[0] == "add" and len(args) >= 3:
         name, role = args[1], args[2]
         pw = getpass.getpass(f"Contraseña para {name}: ")
@@ -116,7 +160,13 @@ def _cli() -> int:
         upsert(name, role, pw)
         print(f"Guardado {name} — {role}")
         return 0
-    print('Uso: python -m server.users [list | add <nombre> "<cargo>"]', file=sys.stderr)
+    print(
+        'Uso: python -m server.users [list | sync | add <nombre> "<cargo>"]\n'
+        "  list  lista los usuarios\n"
+        "  sync  (re)crea los de por defecto con PANEL_SEED_PASSWORD, sin preguntar\n"
+        "  add   crea o actualiza uno preguntando la contrasena",
+        file=sys.stderr,
+    )
     return 1
 
 
