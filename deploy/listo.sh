@@ -9,11 +9,14 @@
 #              a la IP de este droplet sin tocar ningun DNS. Si tienes dominio
 #              propio, pasalo:  API_HOST=api-banco.tudominio.com bash deploy/listo.sh
 #   APP_DIR    donde vive el panel (por defecto /root/sniper-deck)
-#   BOT_REPO   donde vive el bot   (por defecto /root/Definitivo_bot)
+#   BOT_REPO   donde vive el bot   (por defecto se busca: ai-bot, Definitivo_bot...)
 set -uo pipefail   # sin -e: queremos llegar al resumen final aunque algo falle
 
 APP_DIR="${APP_DIR:-/root/sniper-deck}"
-BOT_REPO="${BOT_REPO:-/root/Definitivo_bot}"
+# Sin BOT_REPO explicito NO se escribe nada en el .env: el panel busca solo. Una
+# ruta fija aqui era lo que le hacia leer /root/Definitivo_bot (carpeta vieja)
+# mientras el bot que corre de verdad vive en /root/ai-bot.
+BOT_REPO="${BOT_REPO:-}"
 
 ok()   { printf '  \033[32mOK\033[0m   %s\n' "$1"; }
 warn() { printf '  \033[33mAVISO\033[0m %s\n' "$1"; }
@@ -56,15 +59,26 @@ set_env() {  # set_env CLAVE valor
 }
 
 grep -q '^PANEL_SESSION_SECRET=.\+' .env || set_env PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
-set_env BOT_REPO "$BOT_REPO"
+[ -n "$BOT_REPO" ] && set_env BOT_REPO "$BOT_REPO"
 set_env PANEL_COOKIE_SECURE true    # el navegador entra por HTTPS (Vercel)
 # OJO: el panel se queda accesible desde fuera hasta que el HTTPS este VERIFICADO
 # (paso 6). Cerrarlo antes te deja sin ninguna via de entrada si Caddy falla.
 grep -q '^PANEL_HOST=' .env || set_env PANEL_HOST 0.0.0.0
 ok "credenciales de sesion y rutas puestas"
 
-[ -d "$BOT_REPO" ] && ok "bot encontrado en $BOT_REPO" \
-                   || warn "no veo el bot en $BOT_REPO (ajusta BOT_REPO en .env)"
+# Se le pregunta al propio panel que carpeta ha resuelto: es la unica respuesta
+# que coincide con lo que vas a ver luego en pantalla.
+RESOLVED_REPO="$(./.venv/bin/python -c 'from server import config; print(config.BOT_REPO)' 2>/dev/null)"
+if [ -n "$RESOLVED_REPO" ] && [ -d "$RESOLVED_REPO" ]; then
+  ok "bot encontrado en $RESOLVED_REPO"
+  if [ ! -f "$RESOLVED_REPO/.env" ]; then
+    warn "esa carpeta no tiene .env: sin el, el panel no sabe que wallet es la tuya"
+  fi
+else
+  bad "no encuentro el repo del bot (probe ai-bot, Definitivo_bot...)."
+  echo "       Pasale la ruta buena:  BOT_REPO=/root/ai-bot bash deploy/listo.sh"
+  FAILED=1
+fi
 
 # La wallet caliente solo se enciende cuando el cifrado este verificado (paso 7).
 set_env PANEL_HOT_WALLET false

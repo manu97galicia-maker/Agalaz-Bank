@@ -52,8 +52,50 @@ def _flag(name: str, default: bool = False) -> bool:
 # Paths                                                                        #
 # --------------------------------------------------------------------------- #
 
-#: Checkout of https://github.com/manu97galicia-maker/Definitivo_bot
-BOT_REPO = Path(os.getenv("BOT_REPO", "/root/Definitivo_bot")).expanduser()
+#: Nombres con los que el checkout del bot ha vivido en el droplet. El
+#: repositorio se llama Definitivo_bot, pero el que corre de verdad se clonó
+#: como ``ai-bot``: fijar una sola ruta hacía que el panel leyera una carpeta
+#: vieja y enseñara la wallet y el P&L de otro bot sin avisar de nada.
+_BOT_REPO_NAMES = ("ai-bot", "Definitivo_bot", "Definitivo bot", "sniper-bot")
+
+
+def _looks_like_bot_repo(path: Path) -> bool:
+    """¿Es esto un checkout del bot? Se pide su carpeta de estrategias."""
+    bots = path / "bots"
+    return bots.is_dir() and any(bots.glob("*.yaml"))
+
+
+def _resolve_bot_repo() -> Path:
+    """Localiza el repo del bot: BOT_REPO manda; si no, se busca.
+
+    Devuelve el primer candidato que *parezca* el bot. Si ninguno lo parece,
+    se devuelve el primer nombre de la lista para que ``bot_repo_found`` salga
+    en false y el panel lo diga, en vez de leer en silencio otra carpeta.
+    """
+    explicit = os.getenv("BOT_REPO", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    roots = [Path("/root"), Path.home(), APP_ROOT.parent]
+    candidates = [root / name for root in roots for name in _BOT_REPO_NAMES]
+    # Último recurso: cualquier carpeta junto al bot que tenga bots/*.yaml.
+    for root in roots:
+        try:
+            candidates.extend(sorted(p for p in root.iterdir() if p.is_dir()))
+        except OSError:
+            continue  # no existe o no se puede leer: se prueba el siguiente
+
+    for candidate in candidates:
+        try:
+            if _looks_like_bot_repo(candidate):
+                return candidate
+        except OSError:
+            continue
+    return Path("/root") / _BOT_REPO_NAMES[0]
+
+
+#: Checkout de https://github.com/manu97galicia-maker/Definitivo_bot
+BOT_REPO = _resolve_bot_repo()
 
 BOT_ENV: dict[str, str] = _parse_env_file(BOT_REPO / ".env")
 
