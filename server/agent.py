@@ -24,8 +24,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import anthropic
-
 from . import botlink, chain, config, lists, market, ops, profits, rules, wallet
 
 logger = logging.getLogger(__name__)
@@ -732,11 +730,33 @@ async def _as_async(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
 # Conversation                                                                #
 # --------------------------------------------------------------------------- #
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: Any = None
+_anthropic_module: Any = None
 _fallbacks_supported = True
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
+def _anthropic() -> Any:
+    """Import perezoso del SDK, como se hace con solders y webauthn.
+
+    Importarlo arriba era una bomba: si la rueda no estaba instalada, el
+    ``import`` reventaba al cargar el módulo y **no arrancaba el panel entero**
+    -- ni el wallet, ni las posiciones, ni el login -- por no tener el chat.
+    Ahora la falta del paquete sólo rompe el chat, y lo dice.
+    """
+    global _anthropic_module
+    if _anthropic_module is None:
+        try:
+            import anthropic  # noqa: PLC0415
+        except ImportError as exc:
+            raise AgentError(
+                "Falta el paquete 'anthropic': el chat no funciona (el resto del "
+                "panel sí). Instálalo con:  pip install anthropic"
+            ) from exc
+        _anthropic_module = anthropic
+    return _anthropic_module
+
+
+def _get_client() -> Any:
     global _client
     if not config.ANTHROPIC_API_KEY:
         raise AgentError(
@@ -744,7 +764,7 @@ def _get_client() -> anthropic.AsyncAnthropic:
             "lenguaje natural no funciona (el resto del panel sí)."
         )
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+        _client = _anthropic().AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
     return _client
 
 
@@ -763,7 +783,7 @@ async def _create_message(**kwargs: Any) -> Any:
             return await client.beta.messages.create(
                 betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs
             )
-        except anthropic.BadRequestError:
+        except _anthropic().BadRequestError:
             logger.info("Fallbacks del servidor no disponibles; sigo sin ellos.")
             _fallbacks_supported = False
     return await client.messages.create(**kwargs)
@@ -867,9 +887,9 @@ async def chat(history: list[dict[str, Any]], message: str) -> dict[str, Any]:
                 tools=tools,
                 messages=messages,
             )
-        except anthropic.APIStatusError as exc:
+        except _anthropic().APIStatusError as exc:
             raise AgentError(f"La API de Claude devolvio {exc.status_code}: {exc.message}") from exc
-        except anthropic.APIConnectionError as exc:
+        except _anthropic().APIConnectionError as exc:
             raise AgentError(f"No pude hablar con la API de Claude: {exc}") from exc
 
         if response.stop_reason == "refusal":
