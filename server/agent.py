@@ -26,7 +26,7 @@ from typing import Any
 
 import anthropic
 
-from . import botlink, chain, config, lists, market, ops, profits, wallet
+from . import botlink, chain, config, lists, market, ops, profits, rules, wallet
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,15 @@ Contexto del sistema:
   get_token_info y di en una frase si tiene sentido (liquidez, rug, market cap).
 - Las listas top_devs_*.json y blacklist_devs.json deciden a quién copia el bot;
   añadir o quitar una wallet cambia lo que compra. Trátalo con cuidado.
+- ÓRDENES CONDICIONALES: cuando Manu diga "compra si...", "vende cuando...",
+  "snipea esta si cumple...", "avísame si...", NO es una compra para ahora: es
+  una orden que se queda esperando (`propose_rule`). Traduce lo que diga a
+  números concretos sobre las métricas disponibles, y confirma en una frase
+  cómo la has interpretado ("la armo para comprar 0,05 SOL si el mcap baja de
+  30.000$"). Si falta el importe, el token o el umbral, PREGUNTA: una orden mal
+  entendida gasta dinero solo. Cuando dispare, firmará sin volver a preguntar,
+  así que dilo claro al proponerla. Las órdenes de comprar/vender necesitan la
+  wallet caliente encendida; si está apagada, avisa de que quedará bloqueada.
 
 Cómo trabajas:
 - Usa las herramientas de lectura libremente antes de responder. No inventes
@@ -256,6 +265,11 @@ READ_TOOLS: list[dict[str, Any]] = [
         "description": "Config actual del reparto de ganancias: modo, destinatarios y %.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "list_rules",
+        "description": "Las órdenes condicionales que están esperando ahora mismo.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 WRITE_TOOLS: list[dict[str, Any]] = [
@@ -402,6 +416,67 @@ WRITE_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"unit": {"type": "string"}},
             "required": ["unit"],
+        },
+    },
+    {
+        "name": "propose_rule",
+        "description": (
+            "Prepara una ORDEN CONDICIONAL: algo que se ejecutará solo, más "
+            "adelante, cuando el mercado cumpla unas condiciones. Es lo que hay "
+            "que usar cuando Manu dice 'compra si...', 'vende cuando...', "
+            "'avísame si...'. No compra ni vende ahora: deja la orden esperando. "
+            "Traduce lo que te diga a condiciones numéricas concretas; si te "
+            "falta el importe, el mint o el umbral, PREGUNTA antes de proponer."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string", "description": "Dirección del token a vigilar"},
+                "action": {
+                    "type": "string",
+                    "enum": ["buy", "sell", "alert"],
+                    "description": "buy y sell firman de verdad; alert sólo notifica",
+                },
+                "sol": {"type": "number", "description": "SOL a gastar (sólo con action=buy)"},
+                "percent": {
+                    "type": "number",
+                    "description": "Porcentaje del saldo a vender (sólo con action=sell)",
+                },
+                "conditions": {
+                    "type": "array",
+                    "description": "Todas se tienen que cumplir a la vez (Y, no O)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "metric": {
+                                "type": "string",
+                                "enum": list(rules.METRICS),
+                            },
+                            "op": {"type": "string", "enum": list(rules.OPS)},
+                            "value": {"type": "number"},
+                        },
+                        "required": ["metric", "op", "value"],
+                    },
+                },
+                "expires_minutes": {
+                    "type": "integer",
+                    "description": "Caduca sola si no se cumple en este rato. Opcional.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "La orden tal y como la dijo Manu, para que la reconozca",
+                },
+            },
+            "required": ["mint", "action", "conditions"],
+        },
+    },
+    {
+        "name": "propose_cancel_rule",
+        "description": "Prepara la cancelación de una orden condicional por su id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"rule_id": {"type": "string"}},
+            "required": ["rule_id"],
         },
     },
 ]
@@ -589,6 +664,50 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
         )
         return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
 
+    if name == "list_rules":
+        return rules.summary()
+
+    if name == "propose_rule":
+        # Se valida AQUÍ, al proponer, no al confirmar: si el umbral o el
+        # importe no cuadran, Manu tiene que verlo antes de darle a aceptar,
+        # no descubrirlo con un error después.
+        action = str(args["action"]).strip().lower()
+        draft = {
+            "mint": str(args["mint"]).strip(),
+            "action": action,
+            "conditions": args.get("conditions"),
+            "sol": args.get("sol"),
+            "percent": args.get("percent"),
+            "text": str(args.get("text") or ""),
+            "expires_minutes": args.get("expires_minutes"),
+        }
+        try:
+            preview = rules.describe({**draft, "conditions": rules._clean_conditions(draft["conditions"])})  # noqa: SLF001
+        except rules.RuleError as exc:
+            return {"error": str(exc), "queued": False}
+
+        danger = "low" if action == "alert" else "high"
+        firma = "" if action == "alert" else " — firmará de verdad, sin preguntar otra vez"
+        record = _queue(
+            "rule",
+            f"ORDEN CONDICIONAL: {preview}{firma}",
+            danger,
+            lambda: _as_async(rules.create, **draft),
+        )
+        return {
+            "queued": True,
+            "action_id": record["id"],
+            "note": "Pendiente. La orden aún no está armada.",
+        }
+
+    if name == "propose_cancel_rule":
+        rule_id = str(args["rule_id"]).strip()
+        record = _queue(
+            "rule_cancel", f"CANCELAR la orden condicional {rule_id}", "low",
+            lambda: _as_async(rules.cancel, rule_id),
+        )
+        return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
     if name == "propose_shell":
         command = str(args["command"])
         record = _queue(
@@ -604,9 +723,9 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
     raise AgentError(f"Herramienta desconocida: {name}")
 
 
-async def _as_async(func: Callable[..., Any], *args: Any) -> Any:
+async def _as_async(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Adapt the synchronous botlink helpers to the async confirmation queue."""
-    return func(*args)
+    return func(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #

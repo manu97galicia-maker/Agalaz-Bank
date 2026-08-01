@@ -95,6 +95,18 @@
   .up{color:var(--up)} .down{color:var(--down)} .warn{color:var(--warn)}
   .row{display:flex;align-items:center;gap:10px;padding:11px 0;border-top:1px solid var(--line)}
   .row:first-of-type{border-top:none}
+  .dim{color:var(--dim)}
+  /* Campana: el contador va pegado al nombre de la pestaña. */
+  .badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:6px;border-radius:999px;
+    background:var(--accent);color:#1a1408;font-size:10px;font-weight:700;text-align:center;line-height:17px}
+  /* Un aviso sin leer se marca con una barra dorada, no con color de fondo:
+     el buzón se lee de un vistazo y el oro ya es el acento de la casa. */
+  .note{padding:10px 0 10px 11px;border-top:1px solid var(--line);border-left:2px solid transparent}
+  .note:first-of-type{border-top:none}
+  .note.unread{border-left-color:var(--accent)}
+  .note b{display:block;font-size:13px;font-weight:600}
+  .note span{display:block;font-size:12px;color:var(--dim);margin-top:2px;word-break:break-all}
+  .note a{font-size:11px;color:var(--accent)}
   .grow{flex:1;min-width:0}
   .sym{font-weight:650}
   .sub{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -213,6 +225,7 @@
       <button data-tab="profits">Ganancias</button>
       <button data-tab="bots">Bots</button>
       <button data-tab="srv">Servidor</button>
+      <button data-tab="notify">Notificaciones<span id="navUnread" class="badge" style="display:none"></span></button>
     </nav>
   </header>
 
@@ -366,8 +379,64 @@
 
     <section id="tab-srv">
       <div class="tile">
+        <h2>Dar órdenes hablando</h2>
+        <div class="hints">
+          <button>Para el bot</button>
+          <button>Arranca el bot</button>
+          <button>¿Está todo corriendo?</button>
+          <button>Avísame si la liquidez de … baja de 5000$</button>
+        </div>
+        <div id="srvLog"></div>
+        <div class="composer">
+          <textarea id="srvMsg" rows="1" placeholder="«compra 0,05 SOL de … si el mcap baja de 30k»"></textarea>
+          <button class="send" id="srvSend">↑</button>
+        </div>
+        <div class="empty" style="margin-top:8px">
+          Parar, arrancar y reiniciar se confirman arriba antes de hacerse.
+          Las órdenes condicionales quedan esperando abajo.
+        </div>
+      </div>
+
+      <div class="tile">
+        <h2>Órdenes esperando</h2>
+        <div id="rules"><div class="empty">Cargando…</div></div>
+      </div>
+
+      <div class="tile">
         <h2>Servidor</h2>
         <div id="srv"><button class="pill" id="loadSrv">Consultar</button></div>
+      </div>
+    </section>
+
+    <section id="tab-notify">
+      <div class="tile">
+        <h2>Buzón</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="pill" id="readAll">Marcar todas leídas</button>
+          <button class="pill" id="clearInbox">Vaciar</button>
+        </div>
+        <div id="inbox"><div class="empty">Cargando…</div></div>
+      </div>
+
+      <div class="tile">
+        <h2>Qué se avisa</h2>
+        <div id="notifyState" class="empty">Cargando…</div>
+        <div id="notifyBox" style="display:none">
+          <label class="row" style="cursor:pointer">
+            <input type="checkbox" id="nEnabled">
+            <span>Notificaciones encendidas</span>
+          </label>
+          <div id="notifyEvents" style="margin-top:8px"></div>
+          <label class="row" style="cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="nTelegram">
+            <span>Mandarlas también a Telegram <span class="dim">(el bot ya avisa por ahí)</span></span>
+          </label>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="pill" id="saveNotify">Guardar</button>
+            <button class="pill" id="testNotify">Probar</button>
+          </div>
+          <div id="notifyMsg" class="empty" style="margin-top:10px"></div>
+        </div>
       </div>
     </section>
   </main>
@@ -553,6 +622,160 @@ function enterApp(me) {
 $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); setToken(""); show("login"); };
 
 /* -------------------------------- tabs ------------------------------- */
+/* -------------------------- órdenes condicionales -------------------- */
+async function loadRules() {
+  const box = $("#rules");
+  try {
+    const d = await api("/api/rules");
+    box.innerHTML = "";
+    if (!d.hot_wallet && d.armed.some(r => r.action !== "alert")) {
+      const w = el("div", "empty warn",
+        "La wallet caliente está apagada: las órdenes de comprar/vender no se ejecutarán.");
+      box.appendChild(w);
+    }
+    if (!d.armed.length) {
+      box.appendChild(el("div", "empty", "Ninguna. Pídelo arriba: «compra 0,05 SOL de … si el mcap baja de 30k»."));
+    }
+    d.armed.forEach(r => {
+      const row = el("div", "row");
+      const left = el("div");
+      left.style.flex = "1";
+      left.appendChild(el("b", null, r.human));
+      if (r.text && r.text !== r.human) left.appendChild(el("span", "dim", " · " + r.text));
+      const seen = Object.entries(r.last_seen || {})
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => k.replace(/_usd$/, "") + ": " + n2(v));
+      left.appendChild(el("div", "empty", seen.length ? "ahora → " + seen.join(" · ") : "aún sin datos"));
+      row.appendChild(left);
+      const kill = el("button", "ghost", "Cancelar");
+      kill.onclick = async () => {
+        kill.disabled = true;
+        try { await api("/api/rules/cancel", { method: "POST", body: JSON.stringify({ id: r.id }) }); }
+        catch (e) { kill.disabled = false; return; }
+        loadRules();
+      };
+      row.appendChild(kill);
+      box.appendChild(row);
+    });
+    (d.recent || []).forEach(r => {
+      const row = el("div", "row");
+      row.appendChild(el("span", "empty", `${r.human} — ${r.status}${r.error ? ": " + r.error : ""}`));
+      box.appendChild(row);
+    });
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty", e.message));
+  }
+}
+
+/* ------------------------------- avisos ------------------------------ */
+const NOTIFY_LABELS = {
+  buy:      "Compras que firmo desde el panel",
+  sell:     "Ventas que firmo desde el panel",
+  send:     "Envíos de SOL",
+  fill:     "Cada compra/venta que cierra el bot",
+  bot_down: "El bot se queda callado",
+  profits:  "Reparto automático de ganancias",
+};
+
+const KIND_ICON = { buy: "🟢", sell: "🔴", send: "💸", fill: "🤖", bot_down: "⚠️", profits: "💰", test: "🔔" };
+
+function whenAgo(ts) {
+  const mins = (Date.now() / 1000 - ts) / 60;
+  if (mins < 1) return "ahora";
+  if (mins < 60) return Math.round(mins) + " min";
+  if (mins < 1440) return Math.round(mins / 60) + " h";
+  return Math.round(mins / 1440) + " d";
+}
+
+function setUnread(count) {
+  const badge = $("#navUnread");
+  badge.textContent = count > 99 ? "99+" : String(count);
+  badge.style.display = count > 0 ? "inline-block" : "none";
+}
+
+async function loadInbox() {
+  const box = $("#inbox");
+  try {
+    const d = await api("/api/inbox");
+    setUnread(d.unread);
+    box.innerHTML = "";
+    if (!d.entries.length) { box.appendChild(el("div", "empty", "Nada por ahora.")); return; }
+    d.entries.forEach(e => {
+      const node = el("div", "note" + (e.read ? "" : " unread"));
+      node.appendChild(el("b", null, (KIND_ICON[e.kind] || "•") + "  " + e.title));
+      if (e.text) node.appendChild(el("span", null, e.text));
+      const foot = el("span", null, whenAgo(e.ts));
+      node.appendChild(foot);
+      if (e.url) {
+        const a = el("a", null, "ver la transacción");
+        a.href = e.url; a.target = "_blank"; a.rel = "noopener";
+        node.appendChild(a);
+      }
+      box.appendChild(node);
+    });
+    // Se abren leídas: has entrado a mirarlas, para eso está el buzón.
+    if (d.unread) { await api("/api/inbox/read", { method: "POST", body: "{}" }); setUnread(0); }
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty", e.message));
+  }
+}
+
+async function loadNotify() {
+  loadInbox();
+  const box = $("#notifyBox"), stateBox = $("#notifyState");
+  try {
+    const d = await api("/api/notify");
+    stateBox.textContent = d.bot_quiet_minutes == null
+      ? "No encuentro los ficheros del bot para vigilarlo."
+      : "El bot escribió hace " + n2(d.bot_quiet_minutes) + " min"
+        + (d.bot_quiet_minutes >= d.silence_minutes ? " — ya está avisado." : ".");
+    $("#nEnabled").checked = !!d.enabled;
+    $("#nTelegram").checked = !!d.telegram;
+    $("#nTelegram").disabled = !d.telegram_ready;
+    const holder = $("#notifyEvents");
+    holder.innerHTML = "";
+    Object.keys(NOTIFY_LABELS).forEach(key => {
+      const row = el("label", "row");
+      row.style.cursor = "pointer";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.dataset.ev = key; cb.checked = d.events[key] !== false;
+      row.appendChild(cb);
+      row.appendChild(el("span", null, NOTIFY_LABELS[key]));
+      holder.appendChild(row);
+    });
+    box.style.display = "block";
+  } catch (e) {
+    stateBox.textContent = e.message;
+  }
+}
+
+async function saveNotify() {
+  const events = {};
+  document.querySelectorAll("#notifyEvents input[data-ev]").forEach(c => { events[c.dataset.ev] = c.checked; });
+  $("#notifyMsg").textContent = "Guardando…";
+  try {
+    await api("/api/notify", { method: "POST", body: JSON.stringify({
+      enabled: $("#nEnabled").checked, telegram: $("#nTelegram").checked, events }) });
+    $("#notifyMsg").textContent = "Guardado.";
+  } catch (e) {
+    $("#notifyMsg").textContent = e.message;
+  }
+}
+
+async function testNotify() {
+  $("#notifyMsg").textContent = "Probando…";
+  try {
+    const d = await api("/api/notify/test", { method: "POST", body: "{}" });
+    await loadInbox();
+    $("#notifyMsg").textContent = "Listo, mírala arriba en el buzón."
+      + (d.telegram ? (d.telegram.sent ? " También ha salido a Telegram." : " A Telegram no: " + d.telegram.reason) : "");
+  } catch (e) {
+    $("#notifyMsg").textContent = "No salió: " + e.message;
+  }
+}
+
 document.querySelectorAll("nav button").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
@@ -561,6 +784,8 @@ document.querySelectorAll("nav button").forEach(b => {
     if (tab === "panel") loadPanel();
     else if (tab === "lists") { if ($("#listsBox").querySelector(".row")) {} else loadLists(); }
     else if (tab === "profits") loadProfits();
+    else if (tab === "notify") loadNotify();
+    else if (tab === "srv") loadRules();
     else if (tab === "trade") $("#hotWarn").style.display = (state && state.config && state.config.hot_wallet) ? "none" : "block";
   };
 });
@@ -706,6 +931,35 @@ $("#loadWallet").onclick = async () => {
   } catch (err) { box.innerHTML = ""; box.appendChild(el("div", "empty warn", err.message)); }
 };
 
+/* Chat de la pestaña Servidor: mismo agente, otras burbujas. Al terminar se
+   refresca la lista, que es donde aparece lo que acabas de dejar armado. */
+const srvBox = $("#srvMsg");
+const askSrv = () => {
+  const text = srvBox.value.trim();
+  if (!text) return;
+  srvBox.value = ""; srvBox.style.height = "auto";
+  ask(text, { log: "#srvLog", send: "#srvSend", after: loadRules });
+};
+$("#srvSend").onclick = askSrv;
+srvBox.addEventListener("input", () => { srvBox.style.height = "auto"; srvBox.style.height = srvBox.scrollHeight + "px"; });
+srvBox.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askSrv(); } });
+document.querySelectorAll("#tab-srv .hints button").forEach(b => {
+  b.onclick = () => ask(b.textContent, { log: "#srvLog", send: "#srvSend", after: loadRules });
+});
+
+$("#saveNotify").onclick = saveNotify;
+$("#testNotify").onclick = testNotify;
+$("#readAll").onclick = async () => { await api("/api/inbox/read", { method: "POST", body: "{}" }); loadInbox(); };
+$("#clearInbox").onclick = async () => { await api("/api/inbox/clear", { method: "POST" }); loadInbox(); };
+
+/* La campana se refresca sola: el vigilante mira cada minuto, así que con
+   comprobar cada minuto desde el navegador va sobrado. */
+async function pollUnread() {
+  if (!sessionToken) return;
+  try { setUnread((await api("/api/inbox")).unread); } catch (e) { /* ya se verá al entrar */ }
+}
+setInterval(pollUnread, 60000);
+
 $("#loadSrv").onclick = async () => {
   const box = $("#srv");
   box.innerHTML = '<div class="empty">Consultando…</div>';
@@ -754,29 +1008,36 @@ $("#loadLog").onclick = async () => {
 };
 
 /* --------------------------------- chat ------------------------------ */
-function bubble(text, who) {
+/* El mismo agente atiende los dos chats (el general y el de Servidor); sólo
+   cambia dónde se pintan las burbujas. La conversación es una sola, así que
+   puedes empezar una orden en un sitio y rematarla en el otro. */
+function bubble(text, who, logSel) {
   const b = el("div", "msg " + who, text);
-  $("#log").appendChild(b);
+  $(logSel || "#log").appendChild(b);
   b.scrollIntoView({ behavior: "smooth", block: "end" });
   return b;
 }
 
-async function ask(text) {
+async function ask(text, opts) {
+  const o = opts || {};
+  const logSel = o.log || "#log";
+  const sendSel = o.send || "#send";
   if (busy || !text.trim()) return;
   busy = true;
-  $("#send").disabled = true;
-  bubble(text, "me");
-  const thinking = bubble("…", "ai");
+  $(sendSel).disabled = true;
+  bubble(text, "me", logSel);
+  const thinking = bubble("…", "ai", logSel);
   try {
     const out = await api("/api/agent/chat", { method: "POST", body: JSON.stringify({ message: text }) });
     thinking.textContent = out.reply;
     if (out.pending?.length) { renderPending(out.pending); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    if (o.after) o.after();
   } catch (err) {
     thinking.textContent = err.message;
     thinking.classList.add("err");
   } finally {
     busy = false;
-    $("#send").disabled = false;
+    $(sendSel).disabled = false;
   }
 }
 

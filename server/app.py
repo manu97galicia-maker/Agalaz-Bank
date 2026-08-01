@@ -26,8 +26,10 @@ from . import (
     config,
     lists,
     market,
+    notify,
     ops,
     profits,
+    rules,
     users,
     wallet,
     webauthn_face,
@@ -413,6 +415,7 @@ async def handle_buy(request: web.Request) -> web.Response:
         int(body["slippage_bps"]) if body.get("slippage_bps") else None,
     )
     logger.warning("COMPRA firmada desde el panel: %s", result.get("signature"))
+    await notify.signed_buy(str(body["mint"]).strip(), float(body["sol"]), result)
     return web.json_response({"ok": True, **result})
 
 
@@ -424,6 +427,7 @@ async def handle_sell_signed(request: web.Request) -> web.Response:
         int(body["slippage_bps"]) if body.get("slippage_bps") else None,
     )
     logger.warning("VENTA firmada desde el panel: %s", result.get("signature"))
+    await notify.signed_sell(str(body["mint"]).strip(), float(body["percent"]), result)
     return web.json_response({"ok": True, **result})
 
 
@@ -431,7 +435,70 @@ async def handle_send_sol(request: web.Request) -> web.Response:
     body = await request.json()
     result = await wallet.send_sol(str(body["to"]).strip(), float(body["sol"]))
     logger.warning("ENVIO de SOL firmado desde el panel: %s", result.get("signature"))
+    await notify.signed_send(str(body["to"]).strip(), float(body["sol"]), result)
     return web.json_response({"ok": True, **result})
+
+
+# --------------------------------------------------------------------------- #
+# Notificaciones (Telegram)                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def handle_notify_status(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **notify.status()})
+
+
+async def handle_notify_save(request: web.Request) -> web.Response:
+    body = await request.json()
+    prefs = notify.set_prefs(
+        bool(body.get("enabled", True)),
+        body.get("events") or {},
+        bool(body.get("telegram", False)),
+    )
+    logger.info("Avisos: enabled=%s telegram=%s %s", prefs["enabled"], prefs["telegram"], prefs["events"])
+    return web.json_response({"ok": True, **notify.status()})
+
+
+async def handle_rules(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **rules.summary()})
+
+
+async def handle_rule_cancel(request: web.Request) -> web.Response:
+    body = await request.json()
+    cancelled = rules.cancel(str(body.get("id", "")).strip())
+    if not cancelled:
+        return web.json_response({"ok": False, "error": "Esa orden ya no estaba esperando."}, status=404)
+    logger.warning("Orden condicional cancelada a mano: %s", body.get("id"))
+    return web.json_response({"ok": True, **rules.summary()})
+
+
+async def handle_inbox(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **notify.inbox()})
+
+
+async def handle_inbox_read(request: web.Request) -> web.Response:
+    body = await request.json() if request.can_read_body else {}
+    ids = body.get("ids") if isinstance(body, dict) else None
+    marked = notify.mark_read([int(i) for i in ids] if ids else None)
+    return web.json_response({"ok": True, "marked": marked, "unread": notify.unread()})
+
+
+async def handle_inbox_clear(request: web.Request) -> web.Response:
+    notify.clear()
+    return web.json_response({"ok": True, "unread": 0})
+
+
+async def handle_notify_test(request: web.Request) -> web.Response:
+    """Deja un aviso de prueba en el buzón. Salta las preferencias a propósito:
+    si estás probando, quieres ver si APARECE, no si además está encendido."""
+    user = request.app["auth"].token_user(_request_token(request)) or "alguien"
+    entry = notify.add("test", "Prueba de notificaciones", f"Lanzada por {user}. Si lees esto, funciona.")
+    result = {"telegram": None}
+    if notify.load().get("telegram"):
+        result["telegram"] = await notify.send_telegram(
+            f"🔔 <b>AGALAZ BANK</b>\nPrueba lanzada por {user}."
+        )
+    return web.json_response({"ok": True, "entry": entry, **result})
 
 
 # --------------------------------------------------------------------------- #
@@ -605,6 +672,15 @@ def create_app() -> web.Application:
     app.router.add_post("/api/agent/cancel", handle_cancel)
     app.router.add_post("/api/agent/reset", handle_reset_chat)
 
+    app.router.add_get("/api/notify", handle_notify_status)
+    app.router.add_post("/api/notify", handle_notify_save)
+    app.router.add_post("/api/notify/test", handle_notify_test)
+    app.router.add_get("/api/rules", handle_rules)
+    app.router.add_post("/api/rules/cancel", handle_rule_cancel)
+    app.router.add_get("/api/inbox", handle_inbox)
+    app.router.add_post("/api/inbox/read", handle_inbox_read)
+    app.router.add_post("/api/inbox/clear", handle_inbox_clear)
+
     app.on_startup.append(_start_background)
     app.on_cleanup.append(_stop_background)
     return app
@@ -629,22 +705,61 @@ async def _auto_profit_loop() -> None:
             result = await profits.auto_tick()
             if result:
                 logger.warning("Reparto AUTO: %s SOL", result.get("distributed_sol"))
+                await notify.profits_sent(float(result.get("distributed_sol") or 0))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- un fallo no debe matar el bucle
             logger.exception("Fallo en el bucle de reparto automático")
 
 
+async def _notify_watch_loop() -> None:
+    """Vigila los fills nuevos del bot y su silencio, y avisa por Telegram.
+
+    Arranca marcando los fills que ya había como vistos: al reiniciar el panel
+    no tiene ninguna gracia recibir de golpe el histórico entero.
+    """
+    prefs = notify.load()
+    prefs["seen_fills"] = len(notify.fill_lines())
+    notify.save(prefs)
+
+    silent_state: dict[str, bool] = {}
+    while True:
+        try:
+            await asyncio.sleep(notify.WATCH_INTERVAL)
+            await notify.watch_tick(silent_state)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- un fallo no debe matar el bucle
+            logger.exception("Fallo en el vigilante de avisos")
+
+
+async def _rules_loop() -> None:
+    """Vigila las órdenes condicionales y las dispara cuando se cumplen."""
+    while True:
+        try:
+            await asyncio.sleep(rules.CHECK_INTERVAL)
+            fired = await rules.check_tick()
+            if fired:
+                logger.warning("Órdenes condicionales disparadas: %s", fired)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- un fallo no debe matar el bucle
+            logger.exception("Fallo revisando las órdenes condicionales")
+
+
 async def _start_background(app: web.Application) -> None:
     app["auto_profit_task"] = asyncio.create_task(_auto_profit_loop())
+    app["notify_task"] = asyncio.create_task(_notify_watch_loop())
+    app["rules_task"] = asyncio.create_task(_rules_loop())
 
 
 async def _stop_background(app: web.Application) -> None:
-    task = app.get("auto_profit_task")
-    if task:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    for key in ("auto_profit_task", "notify_task", "rules_task"):
+        task = app.get(key)
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def main() -> None:
