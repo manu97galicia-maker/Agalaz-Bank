@@ -28,6 +28,7 @@ from . import (
     market,
     notify,
     ops,
+    paper,
     profits,
     rules,
     users,
@@ -459,6 +460,37 @@ async def handle_notify_save(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, **notify.status()})
 
 
+async def handle_paper(request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, **paper.summary()})
+
+
+async def handle_paper_toggle(request: web.Request) -> web.Response:
+    body = await request.json()
+    if not paper.set_running(str(body.get("id", "")), bool(body.get("running", True))):
+        return web.json_response({"ok": False, "error": "No existe esa estrategia."}, status=404)
+    return web.json_response({"ok": True, **paper.summary()})
+
+
+async def handle_paper_delete(request: web.Request) -> web.Response:
+    body = await request.json()
+    if not paper.delete(str(body.get("id", ""))):
+        return web.json_response({"ok": False, "error": "No existe esa estrategia."}, status=404)
+    return web.json_response({"ok": True, **paper.summary()})
+
+
+async def handle_costs(request: web.Request) -> web.Response:
+    """Desglose de comisiones para un tamano de posicion. Sin login-gate extra:
+    es una calculadora, no toca nada."""
+    try:
+        size = float(request.query.get("size_sol", "0.15"))
+    except ValueError:
+        return web.json_response({"ok": False, "error": "size_sol no es un numero."}, status=400)
+    slip = request.query.get("slippage_pct")
+    return web.json_response(
+        {"ok": True, **paper.cost_model(size, slippage_pct=float(slip) if slip else None)}
+    )
+
+
 async def handle_rules(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, **rules.summary()})
 
@@ -675,6 +707,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/notify", handle_notify_status)
     app.router.add_post("/api/notify", handle_notify_save)
     app.router.add_post("/api/notify/test", handle_notify_test)
+    app.router.add_get("/api/paper", handle_paper)
+    app.router.add_post("/api/paper/toggle", handle_paper_toggle)
+    app.router.add_post("/api/paper/delete", handle_paper_delete)
+    app.router.add_get("/api/costs", handle_costs)
     app.router.add_get("/api/rules", handle_rules)
     app.router.add_post("/api/rules/cancel", handle_rule_cancel)
     app.router.add_get("/api/inbox", handle_inbox)
@@ -741,6 +777,9 @@ async def _rules_loop() -> None:
             fired = await rules.check_tick()
             if fired:
                 logger.warning("Órdenes condicionales disparadas: %s", fired)
+            moves = await paper.tick()
+            if moves:
+                logger.info("Simulador: %s movimientos", moves)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- un fallo no debe matar el bucle

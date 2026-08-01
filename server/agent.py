@@ -24,7 +24,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import botlink, chain, config, lists, market, ops, profits, rules, wallet
+from . import botlink, chain, config, lists, market, ops, paper, profits, rules, wallet
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,16 @@ Contexto del sistema:
   entendida gasta dinero solo. Cuando dispare, firmará sin volver a preguntar,
   así que dilo claro al proponerla. Las órdenes de comprar/vender necesitan la
   wallet caliente encendida; si está apagada, avisa de que quedará bloqueada.
+
+- SIMULADOR EN PAPEL: "simula", "en papel", "a ver si esto funcionaría" NO es
+  operar. Es `propose_paper_strategy`: posiciones de mentira con comisiones de
+  verdad. Nunca mueve dinero, díselo claro.
+- LAS COMISIONES SON EL TEMA. Cada operación son dos transacciones y el fee de
+  prioridad es FIJO en SOL, no un porcentaje: cuanto más pequeña la posición,
+  más se la come. Antes de opinar sobre si una estrategia sale a cuenta, llama
+  a `cost_breakdown` y di cuánto tiene que subir sólo para empatar. Si el take
+  profit que te pide está por debajo de ese punto, dilo sin rodeos: esa
+  estrategia pierde por diseño aunque acierte la dirección.
 
 Cómo trabajas:
 - Usa las herramientas de lectura libremente antes de responder. No inventes
@@ -268,6 +278,31 @@ READ_TOOLS: list[dict[str, Any]] = [
         "description": "Las órdenes condicionales que están esperando ahora mismo.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "list_paper_strategies",
+        "description": (
+            "Estrategias del simulador en papel, con sus resultados en bruto, "
+            "en neto y cuánto se han comido las comisiones."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "cost_breakdown",
+        "description": (
+            "Desglose de lo que cuesta una operación completa (comprar y vender) "
+            "con la config real del bot: fee de prioridad, red, plataforma y "
+            "slippage, y cuánto tiene que subir el token sólo para no perder. "
+            "Úsalo siempre que se hable de si una estrategia sale a cuenta."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "size_sol": {"type": "number", "description": "Tamaño de la posición en SOL"},
+                "slippage_pct": {"type": "number", "description": "Slippage esperado por lado, opcional"},
+            },
+            "required": ["size_sol"],
+        },
+    },
 ]
 
 WRITE_TOOLS: list[dict[str, Any]] = [
@@ -469,6 +504,50 @@ WRITE_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "propose_paper_strategy",
+        "description": (
+            "Prepara una estrategia para el SIMULADOR EN PAPEL. No mueve dinero "
+            "jamás: abre y cierra posiciones de mentira con comisiones de verdad, "
+            "para ver si la idea aguanta los costes. Es lo que hay que usar "
+            "cuando Manu dice 'simula', 'en papel', 'a ver si esto funcionaría'. "
+            "Antes de proponerla, llama a cost_breakdown con el tamaño de "
+            "posición y dile en una frase cuánto tiene que subir sólo para "
+            "empatar: si el take profit que pide está por debajo de eso, avísale "
+            "de que la estrategia pierde por diseño."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre corto para reconocerla"},
+                "mints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tokens que vigila la estrategia",
+                },
+                "entry": {
+                    "type": "array",
+                    "description": "Condiciones de entrada; todas a la vez (Y, no O)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "metric": {"type": "string", "enum": list(rules.METRICS)},
+                            "op": {"type": "string", "enum": list(rules.OPS)},
+                            "value": {"type": "number"},
+                        },
+                        "required": ["metric", "op", "value"],
+                    },
+                },
+                "size_sol": {"type": "number", "description": "SOL por posición"},
+                "take_profit_pct": {"type": "number"},
+                "stop_loss_pct": {"type": "number"},
+                "max_hold_minutes": {"type": "integer"},
+                "slippage_pct": {"type": "number", "description": "Slippage esperado por lado"},
+                "text": {"type": "string", "description": "La estrategia tal y como la dijo Manu"},
+            },
+            "required": ["name", "mints", "entry"],
+        },
+    },
+    {
         "name": "propose_cancel_rule",
         "description": "Prepara la cancelación de una orden condicional por su id.",
         "input_schema": {
@@ -664,6 +743,38 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
 
     if name == "list_rules":
         return rules.summary()
+
+    if name == "list_paper_strategies":
+        return paper.summary()
+
+    if name == "cost_breakdown":
+        return paper.cost_model(float(args["size_sol"]), slippage_pct=args.get("slippage_pct"))
+
+    if name == "propose_paper_strategy":
+        draft = {
+            "name": str(args["name"]),
+            "mints": list(args["mints"]),
+            "entry": args["entry"],
+            "text": str(args.get("text") or ""),
+        }
+        for key in ("size_sol", "take_profit_pct", "stop_loss_pct", "max_hold_minutes", "slippage_pct"):
+            if args.get(key) is not None:
+                draft[key] = args[key]
+        size = float(draft.get("size_sol", 0.15))
+        costs = paper.cost_model(size, slippage_pct=draft.get("slippage_pct"))
+        record = _queue(
+            "paper",
+            f"SIMULAR en papel «{draft['name']}» con {size:g} SOL por posición "
+            f"(no mueve dinero; empata en +{costs['breakeven_pct']:.1f}%)",
+            "low",
+            lambda: _as_async(paper.create, **draft),
+        )
+        return {
+            "queued": True,
+            "action_id": record["id"],
+            "breakeven_pct": costs["breakeven_pct"],
+            "note": "Pendiente. Es simulación: no se compra nada de verdad.",
+        }
 
     if name == "propose_rule":
         # Se valida AQUÍ, al proponer, no al confirmar: si el umbral o el

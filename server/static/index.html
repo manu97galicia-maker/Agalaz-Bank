@@ -224,6 +224,7 @@
       <button data-tab="lists">Listas</button>
       <button data-tab="profits">Ganancias</button>
       <button data-tab="bots">Bots</button>
+      <button data-tab="paper">Simulador</button>
       <button data-tab="srv">Servidor</button>
       <button data-tab="notify">Notificaciones<span id="navUnread" class="badge" style="display:none"></span></button>
     </nav>
@@ -374,6 +375,35 @@
         <h2>Log más reciente</h2>
         <button class="pill" id="loadLog">Cargar</button>
         <pre id="logout_" style="margin-top:10px;display:none"></pre>
+      </div>
+    </section>
+
+    <section id="tab-paper">
+      <div class="tile">
+        <h2>Lo que cuesta cada operación</h2>
+        <div class="row" style="border:none;padding-top:0">
+          <span class="dim">Posición de</span>
+          <input id="costSize" type="number" step="0.01" min="0.01" value="0.15"
+                 style="width:90px;background:var(--bg);border:1px solid var(--line);
+                        border-radius:8px;color:var(--txt);padding:6px 8px">
+          <span class="dim">SOL</span>
+          <button class="pill" id="calcCost">Calcular</button>
+        </div>
+        <div id="costBox"><div class="empty">Cargando…</div></div>
+      </div>
+
+      <div class="tile">
+        <h2>Estrategias en papel</h2>
+        <div class="hints">
+          <button>Simula: comprar BONK si el volumen 5m pasa de 50000, TP 40%, SL 20%</button>
+          <button>¿Cuánto tiene que subir para no perder con 0,15 SOL?</button>
+        </div>
+        <div id="paperLog"></div>
+        <div class="composer">
+          <textarea id="paperMsg" rows="1" placeholder="«simula comprar X si el mcap baja de 30k, vender a +50% o -20%»"></textarea>
+          <button class="send" id="paperSend">↑</button>
+        </div>
+        <div id="paperList" style="margin-top:12px"><div class="empty">Cargando…</div></div>
       </div>
     </section>
 
@@ -622,6 +652,114 @@ function enterApp(me) {
 $("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); setToken(""); show("login"); };
 
 /* -------------------------------- tabs ------------------------------- */
+/* ------------------------------ simulador ---------------------------- */
+const s4 = v => (v == null ? "—" : Number(v).toFixed(4));
+
+async function loadCosts() {
+  const box = $("#costBox");
+  try {
+    const size = Number($("#costSize").value) || 0.15;
+    const c = await api("/api/costs?size_sol=" + size);
+    box.innerHTML = "";
+    const stats = el("div", "stats");
+    for (const [label, value, klass] of [
+      ["Prioridad", s4(c.priority_fee_sol) + " SOL", "down"],
+      ["Plataforma", s4(c.platform_fee_sol) + " SOL", "down"],
+      ["Red", s4(c.network_fee_sol) + " SOL", ""],
+      ["TOTAL", s4(c.total_sol) + " SOL", "down"],
+    ]) {
+      const d = el("div", "stat");
+      d.appendChild(el("b", klass, value));
+      d.appendChild(el("span", null, label));
+      stats.appendChild(d);
+    }
+    box.appendChild(stats);
+    const be = el("div", "row");
+    be.appendChild(el("b", "warn", "Tiene que subir +" + c.breakeven_pct.toFixed(1) + "% sólo para no perder"));
+    box.appendChild(be);
+    box.appendChild(el("div", "empty",
+      "Fee de prioridad: " + c.priority_fee_source
+      + ". Es FIJO en SOL, así que cuanto menor la posición, más pesa. "
+      + "La comisión de plataforma (" + c.platform_fee_pct + "% por lado) es un supuesto. "
+      + "No se cuentan transacciones fallidas ni impacto de precio: el coste real será mayor."));
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty", e.message));
+  }
+}
+
+async function loadPaper() {
+  loadCosts();
+  const box = $("#paperList");
+  try {
+    const d = await api("/api/paper");
+    box.innerHTML = "";
+    if (!d.strategies.length) {
+      box.appendChild(el("div", "empty", "Ninguna todavía. Dísela arriba con tus palabras."));
+      return;
+    }
+    d.strategies.forEach(s => {
+      const t = el("div", "tile");
+      t.style.marginBottom = "8px";
+      const head = el("div", "row");
+      head.style.borderTop = "none";
+      const left = el("div"); left.style.flex = "1";
+      left.appendChild(el("b", null, s.name + (s.running ? "" : "  (parada)")));
+      left.appendChild(el("div", "empty", s.text || ""));
+      left.appendChild(el("div", "empty",
+        `${s.size_sol} SOL · TP ${s.take_profit_pct}% · SL ${s.stop_loss_pct}% · máx ${s.max_hold_minutes} min`));
+      head.appendChild(left);
+      const toggle = el("button", "ghost", s.running ? "Parar" : "Seguir");
+      toggle.onclick = async () => {
+        await api("/api/paper/toggle", { method: "POST", body: JSON.stringify({ id: s.id, running: !s.running }) });
+        loadPaper();
+      };
+      head.appendChild(toggle);
+      const del = el("button", "ghost", "Borrar");
+      del.onclick = async () => {
+        await api("/api/paper/delete", { method: "POST", body: JSON.stringify({ id: s.id }) });
+        loadPaper();
+      };
+      head.appendChild(del);
+      t.appendChild(head);
+
+      const r = s.report;
+      const stats = el("div", "stats");
+      for (const [label, value, klass] of [
+        ["Operaciones", String(r.trades), ""],
+        ["Aciertos", r.trades ? r.win_rate_pct.toFixed(0) + "%" : "—", ""],
+        ["Bruto", s4(r.gross_sol) + " SOL", cls(r.gross_sol)],
+        ["Comisiones", "−" + s4(r.fees_sol) + " SOL", "down"],
+        ["NETO", s4(r.net_sol) + " SOL", cls(r.net_sol)],
+      ]) {
+        const d2 = el("div", "stat");
+        d2.appendChild(el("b", klass, value));
+        d2.appendChild(el("span", null, label));
+        stats.appendChild(d2);
+      }
+      t.appendChild(stats);
+
+      // El dato que da la lección: cuánto de lo ganado se lo llevan los fees.
+      if (r.fees_vs_gross_pct != null) {
+        const verdict = r.fees_vs_gross_pct >= 100
+          ? "Las comisiones se comen TODO lo ganado y más: en bruto gana, en neto pierde."
+          : "Las comisiones se llevan el " + r.fees_vs_gross_pct.toFixed(0) + "% de lo ganado en bruto.";
+        t.appendChild(el("div", "row", verdict));
+      }
+      if (s.open.length) {
+        s.open.forEach(p => t.appendChild(el("div", "empty",
+          "abierta: " + (p.symbol || p.mint.slice(0, 8)) + " desde " + s4(p.entry_price))));
+      }
+      (s.recent || []).forEach(tr => t.appendChild(el("div", "empty",
+        `${tr.symbol || tr.mint.slice(0, 8)} · ${tr.reason} · bruto ${signed(tr.gross_pct)} → neto ${s4(tr.net_sol)} SOL`)));
+      box.appendChild(t);
+    });
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty", e.message));
+  }
+}
+
 /* -------------------------- órdenes condicionales -------------------- */
 async function loadRules() {
   const box = $("#rules");
@@ -786,6 +924,7 @@ document.querySelectorAll("nav button").forEach(b => {
     else if (tab === "profits") loadProfits();
     else if (tab === "notify") loadNotify();
     else if (tab === "srv") loadRules();
+    else if (tab === "paper") loadPaper();
     else if (tab === "trade") $("#hotWarn").style.display = (state && state.config && state.config.hot_wallet) ? "none" : "block";
   };
 });
@@ -946,6 +1085,22 @@ srvBox.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) 
 document.querySelectorAll("#tab-srv .hints button").forEach(b => {
   b.onclick = () => ask(b.textContent, { log: "#srvLog", send: "#srvSend", after: loadRules });
 });
+
+/* Chat del simulador: mismo agente; al terminar refresca la lista. */
+const paperBox = $("#paperMsg");
+const askPaper = () => {
+  const text = paperBox.value.trim();
+  if (!text) return;
+  paperBox.value = ""; paperBox.style.height = "auto";
+  ask(text, { log: "#paperLog", send: "#paperSend", after: loadPaper });
+};
+$("#paperSend").onclick = askPaper;
+paperBox.addEventListener("input", () => { paperBox.style.height = "auto"; paperBox.style.height = paperBox.scrollHeight + "px"; });
+paperBox.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askPaper(); } });
+document.querySelectorAll("#tab-paper .hints button").forEach(b => {
+  b.onclick = () => ask(b.textContent, { log: "#paperLog", send: "#paperSend", after: loadPaper });
+});
+$("#calcCost").onclick = loadCosts;
 
 $("#saveNotify").onclick = saveNotify;
 $("#testNotify").onclick = testNotify;
