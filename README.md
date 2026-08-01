@@ -143,7 +143,7 @@ Guía paso a paso en [`deploy/DESPLIEGUE.md`](deploy/DESPLIEGUE.md). En corto:
 ```bash
 ssh root@159.89.19.12
 [ -d /root/sniper-deck ] && (cd /root/sniper-deck && git pull) \
-  || git clone https://github.com/manu97galicia-maker/WEB-APP-DATOS-FRANC-.git /root/sniper-deck
+  || git clone https://github.com/manu97galicia-maker/Agalaz-Bank.git /root/sniper-deck
 cd /root/sniper-deck && bash deploy/install.sh   # instala aiohttp, PyYAML, anthropic, solders, webauthn
 ./.venv/bin/python -m server.hashpw --pin        # PIN opcional
 nano .env                                         # PANEL_SEED_PASSWORD, PANEL_HOST, etc.

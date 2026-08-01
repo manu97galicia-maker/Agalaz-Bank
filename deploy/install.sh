@@ -3,7 +3,7 @@
 #
 #   curl -fsSL .../install.sh | bash      NO. Clona el repo y lee esto antes.
 #
-#   git clone https://github.com/manu97galicia-maker/WEB-APP-DATOS-FRANC-.git /root/sniper-deck
+#   git clone https://github.com/manu97galicia-maker/Agalaz-Bank.git /root/sniper-deck
 #   cd /root/sniper-deck && bash deploy/install.sh
 set -euo pipefail
 

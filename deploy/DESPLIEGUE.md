@@ -14,7 +14,7 @@ ssh root@159.89.19.12
 
 # clonar (o actualizar) y instalar
 [ -d /root/sniper-deck ] && (cd /root/sniper-deck && git pull) \
-  || git clone https://github.com/manu97galicia-maker/WEB-APP-DATOS-FRANC-.git /root/sniper-deck
+  || git clone https://github.com/manu97galicia-maker/Agalaz-Bank.git /root/sniper-deck
 cd /root/sniper-deck
 bash deploy/install.sh
 ./.venv/bin/pip install solders          # wallet caliente
