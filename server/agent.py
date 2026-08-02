@@ -24,7 +24,19 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import botlink, chain, config, lists, market, ops, paper, profits, rules, wallet
+from . import (
+    botlink,
+    chain,
+    config,
+    gmgn,
+    lists,
+    market,
+    ops,
+    paper,
+    profits,
+    rules,
+    wallet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +568,85 @@ WRITE_TOOLS: list[dict[str, Any]] = [
             "required": ["rule_id"],
         },
     },
+    {
+        "name": "gmgn_descubrir",
+        "description": (
+            "Qué se está lanzando AHORA en pump.fun, con los datos que la API "
+            "de pump.fun no da: cuántas monedas ha creado el dev en total (una "
+            "granja hace miles y sus monedas no valen nada), % de bots de "
+            "bundle, riesgo de rug, holders y smart money dentro. Es la "
+            "pestaña Discover de GMGN. Úsalo antes de proponer una compra."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_mc": {"type": "number", "description": "market cap máximo en USD"},
+                "min_vol": {"type": "number", "description": "volumen 24h mínimo en USD"},
+                "max_edad": {"type": "string", "description": "edad máxima, p.ej. 5m o 30s"},
+            },
+        },
+    },
+    {
+        "name": "gmgn_presupuesto",
+        "description": (
+            "Cuántos tokens recibirías por X SOL, con la ruta y el impacto de "
+            "precio. NO firma ni envía nada: es sólo consulta."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string"},
+                "sol": {"type": "number"},
+                "slippage_pct": {"type": "number"},
+            },
+            "required": ["mint", "sol"],
+        },
+    },
+    {
+        "name": "propose_gmgn_buy",
+        "description": (
+            "Prepara una COMPRA por GMGN con la salida automática ya puesta. "
+            "La diferencia con propose_buy (que va por Jupiter): GMGN ejecuta "
+            "el take-profit y el stop-loss en SU servidor, así que no hay un "
+            "bucle local de venta que se pueda atascar -- el 1-ago un bucle así "
+            "quemó 0,64 SOL en 178 ventas fallidas. Además lleva anti-MEV. "
+            "Los tramos son [[ganancia, % a vender], ...]: [[0.4, 60], [1.2, 20]] "
+            "vende el 60% a +40% y el 20% a +120%. NO compra: deja la propuesta."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string"},
+                "sol": {"type": "number", "description": "SOL a gastar"},
+                "tramos": {
+                    "type": "array",
+                    "description": "[[ganancia, porcentaje], ...] p.ej. [[0.4,60],[1.2,20]]",
+                    "items": {"type": "array", "items": {"type": "number"}},
+                },
+                "stop_pct": {"type": "number", "description": "stop-loss en %, p.ej. 35"},
+                "trailing_pct": {"type": "number", "description": "caída desde el máximo en %"},
+                "slippage_pct": {"type": "number"},
+            },
+            "required": ["mint", "sol"],
+        },
+    },
+    {
+        "name": "propose_gmgn_sell",
+        "description": (
+            "Prepara una VENTA por GMGN de un % de lo que tengas de un token, "
+            "con anti-MEV. Útil cuando la venta normal falla. NO vende: deja la "
+            "propuesta para confirmar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mint": {"type": "string"},
+                "percent": {"type": "number"},
+                "slippage_pct": {"type": "number"},
+            },
+            "required": ["mint", "percent"],
+        },
+    },
 ]
 
 SHELL_TOOL: dict[str, Any] = {
@@ -668,6 +759,65 @@ async def _execute_tool(name: str, args: dict[str, Any]) -> Any:
             lambda: _as_async(botlink.set_trade_field, bot_name, field, value),
         )
         return {"queued": True, "action_id": record["id"], "note": "Pendiente de confirmacion."}
+
+    if name == "gmgn_descubrir":
+        if not gmgn.disponible():
+            return {"error": "gmgn-cli no está instalado en el servidor del panel"}
+        return gmgn.descubrir(
+            max_mc=float(args.get("max_mc") or 0),
+            min_vol=float(args.get("min_vol") or 0),
+            max_edad=str(args.get("max_edad") or "10m"),
+        )
+
+    if name == "gmgn_presupuesto":
+        if not gmgn.disponible():
+            return {"error": "gmgn-cli no está instalado en el servidor del panel"}
+        return gmgn.presupuesto(
+            str(args["mint"]).strip(), float(args["sol"]),
+            chain.wallet_pubkey(), float(args.get("slippage_pct") or 10),
+        )
+
+    if name == "propose_gmgn_buy":
+        if not gmgn.disponible():
+            return {"error": "gmgn-cli no está instalado en el servidor del panel"}
+        mint = str(args["mint"]).strip()
+        sol = float(args["sol"])
+        tramos = [(float(g), float(p)) for g, p in (args.get("tramos") or [])]
+        stop = float(args.get("stop_pct") or 0) or None
+        trail = float(args.get("trailing_pct") or 0) or None
+        cond = gmgn.condiciones_escalera(tramos, stop, trail) if (tramos or stop or trail) else None
+        cmd = gmgn.comando_compra(
+            mint, sol, chain.wallet_pubkey(),
+            float(args.get("slippage_pct") or 10), cond,
+        )
+        salida = ", ".join(f"+{g*100:.0f}%→{p:.0f}%" for g, p in tramos) or "sin escalera"
+        record = _queue(
+            "gmgn_buy",
+            f"COMPRAR {sol:g} SOL de {mint[:8]}… por GMGN con anti-MEV · "
+            f"salida: {salida}" + (f" · stop -{stop:.0f}%" if stop else ""),
+            "high",
+            lambda: _as_async(gmgn.ejecutar, cmd),
+        )
+        return {"queued": True, "action_id": record["id"],
+                "condiciones": cond or [],
+                "note": "Pendiente. No se ha comprado nada."}
+
+    if name == "propose_gmgn_sell":
+        if not gmgn.disponible():
+            return {"error": "gmgn-cli no está instalado en el servidor del panel"}
+        mint = str(args["mint"]).strip()
+        pct = float(args["percent"])
+        cmd = gmgn.comando_venta(
+            mint, pct, chain.wallet_pubkey(), float(args.get("slippage_pct") or 25),
+        )
+        record = _queue(
+            "gmgn_sell",
+            f"VENDER {pct:g}% de {mint[:8]}… por GMGN con anti-MEV (firma real)",
+            "high",
+            lambda: _as_async(gmgn.ejecutar, cmd),
+        )
+        return {"queued": True, "action_id": record["id"],
+                "note": "Pendiente. No se ha vendido nada."}
 
     if name == "propose_buy":
         mint = str(args["mint"]).strip()
