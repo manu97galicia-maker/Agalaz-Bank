@@ -43,7 +43,8 @@ la wallet sin abrir canales extra.
   (fuera del repo). Por defecto: **Manu — Chief Trololo Officer** y **Ricardo —
   Chief Technological Trololo Officer**. El cargo se ve al lado del nombre dentro
   de la app.
-- **Contraseña** (`@Otito123`) **o Face ID / huella** (WebAuthn: Face ID,
+- **Contraseña** (la que sembraste en `PANEL_SEED_PASSWORD`) **o Face ID /
+  huella** (WebAuthn: Face ID,
   Windows Hello, huella Android) **o PIN** corto desde el móvil.
 - **Recuérdame:** sesión persistente de 30 días; sin marcarlo, caduca al cerrar
   el navegador.

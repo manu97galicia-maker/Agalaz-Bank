@@ -2,7 +2,7 @@
 
 Es **additivo y fail-closed**: es una vía extra para entrar, nunca un atajo que
 salte la contraseña. Cualquier fallo de verificación deja fuera (se cae a la
-contraseña @Otito123, que siempre funciona). Requiere HTTPS y un dominio real
+contraseña, que siempre funciona). Requiere HTTPS y un dominio real
 (localhost vale para probar; una IP pelada NO — WebAuthn no lo permite).
 
 Passkeys guardadas en ``state/passkeys.json`` por usuario. Los "challenges" (el

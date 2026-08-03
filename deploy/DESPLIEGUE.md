@@ -51,7 +51,8 @@ Ya está el `vercel.json` en el repo:
 
 El proyecto `web-app-datos-franc` está conectado a este repo, así que **cada push
 lo redespliega**. En `https://web-app-datos-franc.vercel.app/` el navegador habla
-HTTPS con Vercel y Vercel reenvía al droplet. Entra con el **PIN 1357**.
+HTTPS con Vercel y Vercel reenvía al droplet. Entra con tu usuario y
+contraseña, o con el PIN que hayas puesto en `PANEL_PIN_HASH`.
 
 > El tramo Vercel→droplet va por HTTP plano. Para el MVP (viendo datos, wallet
 > caliente OFF) vale. **Antes de encender `PANEL_HOT_WALLET=true`**, monta el
