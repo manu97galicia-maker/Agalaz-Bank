@@ -273,6 +273,15 @@
           <button class="pill" data-buy="0.25">0.25</button>
           <button class="pill" data-buy="0.5">0.5</button>
         </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="pill grow" data-frac="0.25">&frac14;</button>
+          <button class="pill grow" data-frac="0.5">&frac12;</button>
+          <button class="pill grow" data-frac="0.75">&frac34;</button>
+          <button class="pill grow" data-frac="1">TODO</button>
+        </div>
+        <div class="sub" id="fracHint" style="margin-top:6px">
+          Las fracciones son del SOL libre de la wallet. Rellenan la casilla; no compran solas.
+        </div>
         <button class="btn" id="doBuy" style="margin-top:12px">Comprar ahora (firma real)</button>
       </div>
       <div class="tile">
@@ -281,6 +290,7 @@
         <div style="display:flex;gap:8px">
           <button class="pill grow" data-sell="25">25%</button>
           <button class="pill grow" data-sell="50">50%</button>
+          <button class="pill grow" data-sell="75">75%</button>
           <button class="pill grow" data-sell="100">100%</button>
         </div>
       </div>
@@ -1242,6 +1252,38 @@ async function lookupToken() {
 }
 
 document.querySelectorAll("[data-buy]").forEach(b => b.onclick = () => { $("#buySol").value = b.dataset.buy; });
+
+/* Fracciones del SOL libre. Solo RELLENAN la casilla: la compra sigue
+   necesitando el boton de abajo, para que nunca se gaste nada de un solo
+   toque. Se descuenta una reserva para comisiones y se respeta el tope
+   PANEL_MAX_BUY_SOL del servidor. */
+const RESERVA_SOL = 0.05;
+document.querySelectorAll("[data-frac]").forEach(b => b.onclick = async () => {
+  const frac = Number(b.dataset.frac);
+  const hint = $("#fracHint");
+  hint.textContent = "Consultando el saldo…";
+  try {
+    const { wallet: w } = await api("/api/wallet");
+    const libre = Math.max(0, (w.sol_balance || 0) - RESERVA_SOL);
+    const tope = (state && state.config && state.config.max_buy_sol) || 0;
+    let importe = libre * frac;
+    let nota = "";
+    if (tope > 0 && importe > tope) {
+      importe = tope;
+      nota = " (recortado al tope de " + tope + " SOL por compra)";
+    }
+    importe = Math.floor(importe * 1000) / 1000;
+    if (importe <= 0) {
+      hint.textContent = "No hay SOL libre suficiente (reserva " + RESERVA_SOL + " para comisiones).";
+      return;
+    }
+    $("#buySol").value = importe;
+    hint.textContent = importe + " SOL = " + Math.round(frac * 100) + "% de "
+      + libre.toFixed(3) + " libres" + nota + ". Dale a Comprar para ejecutar.";
+  } catch (e) {
+    hint.textContent = "No se pudo leer el saldo: " + e.message;
+  }
+});
 
 $("#doBuy").onclick = async () => {
   const mint = ($("#tMint").value || currentToken || "").trim();
