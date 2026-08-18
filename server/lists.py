@@ -93,6 +93,12 @@ def _read(path: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ListError(f"No pude leer {path.name}: {exc}") from exc
+    # Una lista pelada tambien vale. Media docena de ficheros de devs se
+    # generaron como array de direcciones (`["wallet1", "wallet2", ...]`) en vez
+    # del dict con clave "wallets", y el panel los rechazaba enteros: bastaba
+    # con que UNO tuviera ese formato para que la pestana de Listas fallara.
+    if isinstance(data, list):
+        return {"wallets": data}
     if not isinstance(data, dict):
         raise ListError(f"{path.name} no tiene el formato esperado.")
     return data
